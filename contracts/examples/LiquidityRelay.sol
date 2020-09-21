@@ -46,6 +46,7 @@ contract LiquidityRelay {
         uint256 liquidity;
         uint256 deadline;
         uint256 priceSlippage;
+        uint256 finishedTimestamp;
         address pair;
         LiquidityActionState state;
         mapping(address => Observation[]) pairObservations;
@@ -57,8 +58,8 @@ contract LiquidityRelay {
         uint256 price1Cumulative;
     }
 
-    uint8 REMOVAL = 1;
-    uint8 ADDITION = 2;
+    uint8 public immutable REMOVAL = 1;
+    uint8 public immutable ADDITION = 2;
     address payable public immutable dxdaoAvatar;
     address public immutable factory;
     address public immutable router;
@@ -173,6 +174,7 @@ contract LiquidityRelay {
               liquidity: liquidity,
               deadline: deadline,
               priceSlippage: priceSlippage,
+              finishedTimestamp: 0,
               pair: pair,
               state: LiquidityActionState.CREATED
           })
@@ -213,6 +215,7 @@ contract LiquidityRelay {
 
         if (observationIndex == liquidityActions[_actionId].pairObservations[pair].length) {
             liquidityActions[_actionId].state = LiquidityActionState.PRICE_OBERSERVATION_FINISHED;
+            liquidityActions[_actionId].finishedTimestamp = block.timestamp;
         }
 
         // sends the bounty to the address that executed this function
@@ -226,22 +229,8 @@ contract LiquidityRelay {
             'AddLiquidityToAveragePrice: NOT_FINISHED'
         );
         require(
-            IERC20(liquidityActions[_actionId].tokenA).balanceOf(address(this)) >=
-                liquidityActions[_actionId].amountTokenA,
-            'AddLiquidityToAveragePrice: INSUFFICIENT_BALANCE_TOKEN_A'
-        );
-        require(
-            IERC20(liquidityActions[_actionId].tokenB).balanceOf(address(this)) >=
-                liquidityActions[_actionId].amountTokenB,
-            'AddLiquidityToAveragePrice: INSUFFICIENT_BALANCE_TOKEN_B'
-        );
-        require(
-            IERC20(liquidityActions[_actionId].tokenA).approve(router, liquidityActions[_actionId].amountTokenA),
-            'AddLiquidityToAveragePrice: APPROVE_FAILED_TOKEN_A'
-        );
-        require(
-            IERC20(liquidityActions[_actionId].tokenB).approve(router, liquidityActions[_actionId].amountTokenB),
-            'AddLiquidityToAveragePrice: APPROVE_FAILED_TOKEN_B'
+            block.timestamp <= liquidityActions[_actionId].finishedTimestamp.add(liquidityActions[_actionId].deadline),
+            'AddLiquidityToAveragePrice: DEADLINE_EXCEEDED'
         );
 
         uint256 tokenAveragePriceA = consult(
@@ -263,7 +252,28 @@ contract LiquidityRelay {
 
         uint deadline = liquidityActions[_actionId].deadline;
 
-        (uint256 amountA, uint256 amountB, uint256 liquidity) = IDXswapRouter(router).addLiquidity(
+        if(liquidityActions[_actionId].action == ADDITION) {
+
+          require(
+            IERC20(liquidityActions[_actionId].tokenA).balanceOf(address(this)) >=
+                liquidityActions[_actionId].amountTokenA,
+            'AddLiquidityToAveragePrice: INSUFFICIENT_BALANCE_TOKEN_A'
+          );
+          require(
+              IERC20(liquidityActions[_actionId].tokenB).balanceOf(address(this)) >=
+                  liquidityActions[_actionId].amountTokenB,
+              'AddLiquidityToAveragePrice: INSUFFICIENT_BALANCE_TOKEN_B'
+          );
+          require(
+              IERC20(liquidityActions[_actionId].tokenA).approve(router, liquidityActions[_actionId].amountTokenA),
+              'AddLiquidityToAveragePrice: APPROVE_FAILED_TOKEN_A'
+          );
+          require(
+              IERC20(liquidityActions[_actionId].tokenB).approve(router, liquidityActions[_actionId].amountTokenB),
+              'AddLiquidityToAveragePrice: APPROVE_FAILED_TOKEN_B'
+          );
+
+          (uint256 amountA, uint256 amountB, uint256 liquidity) = IDXswapRouter(router).addLiquidity(
             liquidityActions[_actionId].tokenA,
             liquidityActions[_actionId].tokenB,
             liquidityActions[_actionId].amountTokenA,
@@ -272,25 +282,40 @@ contract LiquidityRelay {
             tokenMinB,
             dxdaoAvatar,
             deadline
-        );
+          );
 
-        liquidityActions[_actionId].state = LiquidityActionState.EXECUTED;
-        emit ExecutedLiquidityAddition(_actionId, amountA, amountB, liquidity);
+          liquidityActions[_actionId].state = LiquidityActionState.EXECUTED;
+          emit ExecutedLiquidityAddition(_actionId, amountA, amountB, liquidity);
 
-        // Send back tokenA Fragments
-        IERC20(liquidityActions[_actionId].tokenA).transfer(
+          // Send back tokenA Fragments
+          IERC20(liquidityActions[_actionId].tokenA).transfer(
+              dxdaoAvatar,
+              liquidityActions[_actionId].amountTokenA.sub(amountA)
+          );
+          // Send back tokenB Fragments
+          IERC20(liquidityActions[_actionId].tokenA).transfer(
+              dxdaoAvatar,
+              liquidityActions[_actionId].amountTokenB.sub(amountB)
+          );
+
+          /* Reset approval for router */
+          IERC20(liquidityActions[_actionId].tokenA).approve(router, 0);
+          IERC20(liquidityActions[_actionId].tokenB).approve(router, 0);
+
+        } else if (liquidityActions[_actionId].action == REMOVAL) {
+
+          (uint256 amountA, uint256 amountB) = IDXswapRouter(router).removeLiquidity(
+            liquidityActions[_actionId].tokenA,
+            liquidityActions[_actionId].tokenB,
+            liquidityActions[_actionId].liquidity,
+            tokenMinA,
+            tokenMinB,
             dxdaoAvatar,
-            liquidityActions[_actionId].amountTokenA.sub(amountA)
-        );
-        // Send back tokenB Fragments
-        IERC20(liquidityActions[_actionId].tokenA).transfer(
-            dxdaoAvatar,
-            liquidityActions[_actionId].amountTokenB.sub(amountB)
-        );
-
-        /* Reset approval for router */
-        IERC20(liquidityActions[_actionId].tokenA).approve(router, 0);
-        IERC20(liquidityActions[_actionId].tokenB).approve(router, 0);
+            deadline
+          );
+          emit ExecutedLiquidityRemoval(_actionId, amountA, amountB);
+        }
+        
     }
 
     // returns the index of the observation corresponding to the given timestamp
