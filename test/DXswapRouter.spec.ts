@@ -659,16 +659,10 @@ describe('DXswapRouter', () => {
     it('happy path', async () => {
       const WETHPairToken0 = await WETHPair.token0()
       await expect(
-        router.swapETHForExactTokens(
-          outputAmount,
-          [WETH.address, WETHPartner.address],
-          wallet.address,
-          MaxUint256,
-          {
-            ...overrides,
-            value: expectedSwapAmount
-          }
-        )
+        router.swapETHForExactTokens(outputAmount, [WETH.address, WETHPartner.address], wallet.address, MaxUint256, {
+          ...overrides,
+          value: expectedSwapAmount
+        })
       )
         .to.emit(WETH, 'Transfer')
         .withArgs(router.address, WETHPair.address, expectedSwapAmount)
@@ -712,7 +706,7 @@ describe('DXswapRouter', () => {
         .withArgs([expectedSwapAmount, outputAmount])
     })
   })
-  
+
   it('quote', async () => {
     expect(await router.quote(bigNumberify(1), bigNumberify(100), bigNumberify(200))).to.eq(bigNumberify(2))
     expect(await router.quote(bigNumberify(2), bigNumberify(200), bigNumberify(100))).to.eq(bigNumberify(1))
@@ -728,29 +722,33 @@ describe('DXswapRouter', () => {
   })
 
   it('getAmountOut', async () => {
-    expect(await router.getAmountOut(bigNumberify(2), bigNumberify(100), bigNumberify(100), bigNumberify(30))).to.eq(bigNumberify(1))
-    await expect(router.getAmountOut(bigNumberify(0), bigNumberify(100), bigNumberify(100), bigNumberify(30))).to.be.revertedWith(
-      'DXswapLibrary: INSUFFICIENT_INPUT_AMOUNT'
+    expect(await router.getAmountOut(bigNumberify(2), bigNumberify(100), bigNumberify(100), bigNumberify(30))).to.eq(
+      bigNumberify(1)
     )
-    await expect(router.getAmountOut(bigNumberify(2), bigNumberify(0), bigNumberify(100), bigNumberify(30))).to.be.revertedWith(
-      'DXswapLibrary: INSUFFICIENT_LIQUIDITY'
-    )
-    await expect(router.getAmountOut(bigNumberify(2), bigNumberify(100), bigNumberify(0), bigNumberify(30))).to.be.revertedWith(
-      'DXswapLibrary: INSUFFICIENT_LIQUIDITY'
-    )
+    await expect(
+      router.getAmountOut(bigNumberify(0), bigNumberify(100), bigNumberify(100), bigNumberify(30))
+    ).to.be.revertedWith('DXswapLibrary: INSUFFICIENT_INPUT_AMOUNT')
+    await expect(
+      router.getAmountOut(bigNumberify(2), bigNumberify(0), bigNumberify(100), bigNumberify(30))
+    ).to.be.revertedWith('DXswapLibrary: INSUFFICIENT_LIQUIDITY')
+    await expect(
+      router.getAmountOut(bigNumberify(2), bigNumberify(100), bigNumberify(0), bigNumberify(30))
+    ).to.be.revertedWith('DXswapLibrary: INSUFFICIENT_LIQUIDITY')
   })
 
   it('getAmountIn', async () => {
-    expect(await router.getAmountIn(bigNumberify(1), bigNumberify(100), bigNumberify(100), bigNumberify(30))).to.eq(bigNumberify(2))
-    await expect(router.getAmountIn(bigNumberify(0), bigNumberify(100), bigNumberify(100), bigNumberify(30))).to.be.revertedWith(
-      'DXswapLibrary: INSUFFICIENT_OUTPUT_AMOUNT'
+    expect(await router.getAmountIn(bigNumberify(1), bigNumberify(100), bigNumberify(100), bigNumberify(30))).to.eq(
+      bigNumberify(2)
     )
-    await expect(router.getAmountIn(bigNumberify(1), bigNumberify(0), bigNumberify(100), bigNumberify(30))).to.be.revertedWith(
-      'DXswapLibrary: INSUFFICIENT_LIQUIDITY'
-    )
-    await expect(router.getAmountIn(bigNumberify(1), bigNumberify(100), bigNumberify(0), bigNumberify(30))).to.be.revertedWith(
-      'DXswapLibrary: INSUFFICIENT_LIQUIDITY'
-    )
+    await expect(
+      router.getAmountIn(bigNumberify(0), bigNumberify(100), bigNumberify(100), bigNumberify(30))
+    ).to.be.revertedWith('DXswapLibrary: INSUFFICIENT_OUTPUT_AMOUNT')
+    await expect(
+      router.getAmountIn(bigNumberify(1), bigNumberify(0), bigNumberify(100), bigNumberify(30))
+    ).to.be.revertedWith('DXswapLibrary: INSUFFICIENT_LIQUIDITY')
+    await expect(
+      router.getAmountIn(bigNumberify(1), bigNumberify(100), bigNumberify(0), bigNumberify(30))
+    ).to.be.revertedWith('DXswapLibrary: INSUFFICIENT_LIQUIDITY')
   })
 
   it('getAmountsOut', async () => {
@@ -1054,5 +1052,4 @@ describe('fee-on-transfer tokens: reloaded', () => {
       )
     })
   })
-  
 })

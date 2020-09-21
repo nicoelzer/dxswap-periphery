@@ -78,7 +78,7 @@ contract LiquidityRelay {
     uint256 public immutable periodSize;
 
     LiquidityAction[] public liquidityActions;
-    uint256 public liquidityActionsCount;
+    uint256 public liquidityActionsIndex;
 
     constructor(
         address payable _dxdaoAvatar,
@@ -88,10 +88,10 @@ contract LiquidityRelay {
         uint8 _granularity,
         uint256 _executionBountyWei
     ) public {
-        require(_granularity > 1, 'SlidingWindowOracle: GRANULARITY');
+        require(_granularity > 1, 'LiquidityRelay: GRANULARITY');
         require(
             (periodSize = _windowSize / _granularity) * _granularity == _windowSize,
-            'SlidingWindowOracle: WINDOW_NOT_EVENLY_DIVISIBLE'
+            'LiquidityRelay: WINDOW_NOT_EVENLY_DIVISIBLE'
         );
         dxdaoAvatar = _dxdaoAvatar;
         factory = factory_;
@@ -128,7 +128,7 @@ contract LiquidityRelay {
             'AddLiquidityToAveragePrice: TRANSFER_FAILED_TOKEN_B'
         );
 
-        uint256 actionId = createLiquidityAction(REMOVAL, tokenA, tokenB, amountTokenA, amountTokenB, 0, deadline, priceSlippage);
+        uint256 actionId = createLiquidityAction(ADDITION, tokenA, tokenB, amountTokenA, amountTokenB, 0, deadline, priceSlippage);
         emit NewLiquidityAddition(actionId, tokenA, tokenB, amountTokenA, amountTokenB, deadline, priceSlippage);
 
     }
@@ -161,7 +161,7 @@ contract LiquidityRelay {
         uint256 priceSlippage
     ) internal returns (uint256) {
 
-      liquidityActionsCount++;
+      liquidityActionsIndex++;
       address pair = DXswapLibrary.pairFor(factory, tokenA, tokenB);
 
       liquidityActions.push(
@@ -180,14 +180,14 @@ contract LiquidityRelay {
           })
       );
 
-      liquidityActions[liquidityActionsCount].state = LiquidityActionState.PRICE_OBERSERVATION;
-      update(liquidityActionsCount);
+      liquidityActions[liquidityActionsIndex].state = LiquidityActionState.PRICE_OBERSERVATION;
+      update(liquidityActionsIndex);
 
-      return liquidityActionsCount;
+      return liquidityActionsIndex;
     }
 
     function update(uint256 _actionId) public payable {
-        require(_actionId <= liquidityActionsCount, 'AddLiquidityToAveragePrice: INVALID_ACTIONID');
+        require(_actionId <= liquidityActionsIndex, 'AddLiquidityToAveragePrice: INVALID_ACTIONID');
         require(
             liquidityActions[_actionId].state == LiquidityActionState.PRICE_OBERSERVATION,
             'AddLiquidityToAveragePrice: STATE_NOT_OBSERVATION'
@@ -218,12 +218,12 @@ contract LiquidityRelay {
             liquidityActions[_actionId].finishedTimestamp = block.timestamp;
         }
 
-        // sends the bounty to the address that executed this function
+        // send the bounty to the address that executed this function
         msg.sender.transfer(executionBountyWei);
     }
 
     function executeLiquidityAction(uint256 _actionId) public {
-        require(_actionId <= liquidityActionsCount, 'AddLiquidityToAveragePrice: INVALID_ACTIONID');
+        require(_actionId <= liquidityActionsIndex, 'AddLiquidityToAveragePrice: INVALID_ACTIONID');
         require(
             liquidityActions[_actionId].state == LiquidityActionState.PRICE_OBERSERVATION_FINISHED,
             'AddLiquidityToAveragePrice: NOT_FINISHED'
@@ -246,7 +246,6 @@ contract LiquidityRelay {
             liquidityActions[_actionId].tokenA
         );
 
-        // TODO USE SAFEMATH
         uint256 tokenMinA = tokenAveragePriceA.mul(1 - liquidityActions[_actionId].priceSlippage / 1000);
         uint256 tokenMinB = tokenAveragePriceB.mul(1 - liquidityActions[_actionId].priceSlippage / 1000);
 
@@ -361,7 +360,7 @@ contract LiquidityRelay {
         uint256 amountIn,
         address tokenOut
     ) public view returns (uint256 amountOut) {
-        address pair = DXswapLibrary.pairFor(factory, tokenIn, tokenOut);
+        address pair = liquidityActions[_actionId].pair;
         Observation storage firstObservation = getFirstObservationInWindow(_actionId);
 
         uint256 timeElapsed = block.timestamp - firstObservation.timestamp;

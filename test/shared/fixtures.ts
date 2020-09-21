@@ -6,6 +6,7 @@ import { expandTo18Decimals } from './utilities'
 
 import DXswapFactory from 'dxswap-core/build/contracts/DXswapFactory.json'
 import IDXswapPair from 'dxswap-core/build/contracts/IDXswapPair.json'
+import dxdaoAvatar from '../../build/contracts/DxAvatar.json'
 
 import ERC20 from '../../build/contracts/ERC20.json'
 import WETH9 from '../../build/contracts/WETH9.json'
@@ -26,6 +27,7 @@ interface DXswapFixture {
   router: Contract
   pair: Contract
   WETHPair: Contract
+  avatar: Contract
 }
 
 export async function dxswapFixture(provider: Web3Provider, [wallet]: Wallet[]): Promise<DXswapFixture> {
@@ -40,6 +42,9 @@ export async function dxswapFixture(provider: Web3Provider, [wallet]: Wallet[]):
 
   // deploy router
   const router = await deployContract(wallet, DXswapRouter, [dxswapFeactory.address, WETH.address], overrides)
+
+  // deploy Avatar
+  const avatar = await deployContract(wallet, dxdaoAvatar, [], overrides)
 
   // event emitter for testing
   const routerEventEmitter = await deployContract(wallet, RouterEventEmitter, [])
@@ -66,6 +71,7 @@ export async function dxswapFixture(provider: Web3Provider, [wallet]: Wallet[]):
     router,
     routerEventEmitter,
     pair,
-    WETHPair
+    WETHPair,
+    avatar
   }
 }
