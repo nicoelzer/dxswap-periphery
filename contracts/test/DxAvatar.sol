@@ -55,4 +55,6 @@ contract DxAvatar{
         return true;
     }
 
+    fallback() external payable { }
+
 }
