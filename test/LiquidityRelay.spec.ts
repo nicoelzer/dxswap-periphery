@@ -11,7 +11,7 @@ import LiquidityRelay from '../build/contracts/LiquidityRelay.json'
 chai.use(solidity)
 
 const overrides = {
-  gasLimit: 9999999999999
+  gasLimit: 7999999999999999
 }
 
 const defaultToken0Amount = expandTo18Decimals(5)
@@ -22,7 +22,7 @@ describe('LiquidityRelay', () => {
   const provider = new MockProvider({
     hardfork: 'istanbul',
     mnemonic: 'horn horn horn horn horn horn horn horn horn horn horn horn',
-    gasLimit: 9999999999999
+    gasLimit: 7999999999999999
   })
   const [wallet, wallet2] = provider.getWallets()
   const loadFixture = createFixtureLoader(provider, [wallet])
@@ -41,8 +41,8 @@ describe('LiquidityRelay', () => {
     await pair.sync()
   }
 
-  const defaultWindowSize = 3600 // 30 Minutes
-  const defaultGranularity = 6 // Every 5 Minutes
+  const defaultWindowSize = 7200 // 30 Minutes
+  const defaultGranularity = 12 // Every 5 Minutes
 
   function observationIndexOf(
     timestamp: number,
@@ -55,12 +55,16 @@ describe('LiquidityRelay', () => {
   }
 
   function deployOracle(windowSize: number, granularity: number) {
-    return deployContract(wallet, LiquidityRelay, [avatar.address, factory.address, router.address, windowSize, granularity, executionBounty], overrides)
+    return deployContract(
+      wallet,
+      LiquidityRelay,
+      [avatar.address, factory.address, router.address, windowSize, granularity, executionBounty],
+      overrides
+    )
   }
 
   beforeEach('deploy fixture', async function() {
     const fixture = await loadFixture(dxswapFixture)
-
     token0 = fixture.token0
     token1 = fixture.token1
     pair = fixture.pair
@@ -94,7 +98,6 @@ describe('LiquidityRelay', () => {
     expect(await oracle.periodSize()).to.eq(600)
     const oracleOther = await deployOracle(defaultWindowSize * 2, defaultGranularity / 2)
     expect(await oracleOther.periodSize()).to.eq(600 * 4)
-
   })
 
   describe('#observationIndexOf', () => {
@@ -109,8 +112,9 @@ describe('LiquidityRelay', () => {
       expect(await oracle.observationIndexOf(2999)).to.eq(4)
       expect(await oracle.observationIndexOf(3000)).to.eq(5)
       expect(await oracle.observationIndexOf(3599)).to.eq(5)
-      expect(await oracle.observationIndexOf(3700)).to.eq(0)
-      expect(await oracle.observationIndexOf(4300)).to.eq(1)
+      expect(await oracle.observationIndexOf(3700)).to.eq(6)
+      expect(await oracle.observationIndexOf(7300)).to.eq(0)
+      expect(await oracle.observationIndexOf(8000)).to.eq(1)
     })
     it('overflow safe', async () => {
       const oracle = await deployOracle(25500, 255) // 100 period size
@@ -120,7 +124,6 @@ describe('LiquidityRelay', () => {
       expect(await oracle.observationIndexOf(199)).to.eq(1)
       expect(await oracle.observationIndexOf(25499)).to.eq(254) // 255th element
       expect(await oracle.observationIndexOf(25500)).to.eq(0)
-
     })
     it('matches offline computation', async () => {
       const oracle = await deployOracle(defaultWindowSize, defaultGranularity)
@@ -134,8 +137,10 @@ describe('LiquidityRelay', () => {
     let liquidityRelay: Contract
     let ActionId: number
 
-    async function addLiquidityAction(amount0: BigNumber = defaultToken0Amount, amount1: BigNumber = defaultToken1Amount) {
-
+    async function addLiquidityAction(
+      amount0: BigNumber = defaultToken0Amount,
+      amount1: BigNumber = defaultToken1Amount
+    ) {
       await token0.transfer(avatar.address, amount0)
       await token1.transfer(avatar.address, amount1)
       let iLiquidityRelay = new utils.Interface(LiquidityRelay.abi)
@@ -143,17 +148,28 @@ describe('LiquidityRelay', () => {
       await avatar.externalTokenApproval(token1.address, liquidityRelay.address, amount1)
       await wallet2.sendTransaction({
         to: avatar.address,
-        value: utils.parseEther("6.0")
-      });
-      
-      const callDataCreateAddition = await iLiquidityRelay.functions.createLiquidityAddition.encode([ token0.address, token1.address, 20, 20, 120, 25 ])
-      
-      let index = await liquidityRelay.liquidityActionsIndex();
+        value: utils.parseEther('6.0')
+      })
 
-      const GenericCall = await avatar.genericCall(liquidityRelay.address, callDataCreateAddition, utils.parseEther("2.0"), { gasLimit: 9999999999999})
-      //const receipt = await GenericCall.wait()
-  
-      return index;
+      const callDataCreateAddition = await iLiquidityRelay.functions.createLiquidityAddition.encode([
+        token0.address,
+        token1.address,
+        20,
+        20,
+        120,
+        25
+      ])
+
+      let index = await liquidityRelay.liquidityActionsIndex()
+
+      const GenericCall = await avatar.genericCall(
+        liquidityRelay.address,
+        callDataCreateAddition,
+        utils.parseEther('2.0'),
+        { gasLimit: 9999999999999 }
+      )
+
+      return index
     }
 
     beforeEach(
@@ -164,7 +180,7 @@ describe('LiquidityRelay', () => {
     beforeEach('add default liquidity', () => addLiquidity())
 
     beforeEach(
-      'add liquidity action', 
+      'add liquidity action',
       async () => (ActionId = await addLiquidityAction(bigNumberify(100), bigNumberify(100)))
     )
 
@@ -175,7 +191,7 @@ describe('LiquidityRelay', () => {
 
     it('sets the appropriate epoch slot', async () => {
       const blockTimestamp = (await pair.getReserves())[2]
-      expect(blockTimestamp).to.eq(startTime+1)
+      expect(blockTimestamp).to.eq(startTime + 1)
       await liquidityRelay.update(ActionId)
 
       expect(await liquidityRelay.pairObservations(ActionId, observationIndexOf(blockTimestamp))).to.deep.eq([
@@ -198,7 +214,7 @@ describe('LiquidityRelay', () => {
       await mineBlock(provider, startTime + 3600)
       const tx = await liquidityRelay.update(ActionId)
       const receipt = await tx.wait()
-      expect(receipt.gasUsed).to.eq('91742')
+      expect(receipt.gasUsed).to.eq('106742')
     }).retries(2) // gas test inconsistent
 
     it('second update in one timeslot does not overwrite', async () => {
@@ -221,7 +237,10 @@ describe('LiquidityRelay', () => {
     let liquidityRelay: Contract
     let ActionId: number
 
-    async function addLiquidityAction(amount0: BigNumber = defaultToken0Amount, amount1: BigNumber = defaultToken1Amount) {
+    async function addLiquidityAction(
+      amount0: BigNumber = defaultToken0Amount,
+      amount1: BigNumber = defaultToken1Amount
+    ) {
       await token0.transfer(avatar.address, amount0)
       await token1.transfer(avatar.address, amount1)
       let iLiquidityRelay = new utils.Interface(LiquidityRelay.abi)
@@ -229,13 +248,25 @@ describe('LiquidityRelay', () => {
       await avatar.externalTokenApproval(token1.address, liquidityRelay.address, amount1)
       await wallet2.sendTransaction({
         to: avatar.address,
-        value: utils.parseEther("6.0")
-      });
-      
-      const callDataCreateAddition = await iLiquidityRelay.functions.createLiquidityAddition.encode([ token0.address, token1.address, 20, 20, 120, 25 ])
-      let index = await liquidityRelay.liquidityActionsIndex();
-      const GenericCall = await avatar.genericCall(liquidityRelay.address, callDataCreateAddition, utils.parseEther("2.0"), { gasLimit: 9999999999999})
-      return index;
+        value: utils.parseEther('6.0')
+      })
+
+      const callDataCreateAddition = await iLiquidityRelay.functions.createLiquidityAddition.encode([
+        token0.address,
+        token1.address,
+        20,
+        20,
+        120,
+        25
+      ])
+      let index = await liquidityRelay.liquidityActionsIndex()
+      const GenericCall = await avatar.genericCall(
+        liquidityRelay.address,
+        callDataCreateAddition,
+        utils.parseEther('2.0'),
+        { gasLimit: 9999999999999 }
+      )
+      return index
     }
 
     beforeEach(
@@ -247,7 +278,7 @@ describe('LiquidityRelay', () => {
     beforeEach('add default liquidity', () => addLiquidity())
 
     beforeEach(
-      'add liquidity action', 
+      'add liquidity action',
       async () => (ActionId = await addLiquidityAction(bigNumberify(100), bigNumberify(100)))
     )
 
@@ -269,7 +300,10 @@ describe('LiquidityRelay', () => {
       let previousCumulativePrices: any
       let ActionId: number
 
-      async function addLiquidityAction(amount0: BigNumber = defaultToken0Amount, amount1: BigNumber = defaultToken1Amount) {
+      async function addLiquidityAction(
+        amount0: BigNumber = defaultToken0Amount,
+        amount1: BigNumber = defaultToken1Amount
+      ) {
         await token0.transfer(avatar.address, amount0)
         await token1.transfer(avatar.address, amount1)
         let iLiquidityRelay = new utils.Interface(LiquidityRelay.abi)
@@ -277,22 +311,34 @@ describe('LiquidityRelay', () => {
         await avatar.externalTokenApproval(token1.address, liquidityRelay.address, amount1)
         await wallet2.sendTransaction({
           to: avatar.address,
-          value: utils.parseEther("6.0")
-        });
-        
-        const callDataCreateAddition = await iLiquidityRelay.functions.createLiquidityAddition.encode([ token0.address, token1.address, 20, 20, 120, 25 ])
-        let index = await liquidityRelay.liquidityActionsIndex();
-        const GenericCall = await avatar.genericCall(liquidityRelay.address, callDataCreateAddition, utils.parseEther("2.0"), { gasLimit: 9999999999999})
-        return index;
+          value: utils.parseEther('6.0')
+        })
+
+        const callDataCreateAddition = await iLiquidityRelay.functions.createLiquidityAddition.encode([
+          token0.address,
+          token1.address,
+          20,
+          20,
+          120,
+          25
+        ])
+        let index = await liquidityRelay.liquidityActionsIndex()
+        const GenericCall = await avatar.genericCall(
+          liquidityRelay.address,
+          callDataCreateAddition,
+          utils.parseEther('2.0'),
+          { gasLimit: 39999999999999 }
+        )
+        return index
       }
 
       beforeEach(
         'deploy oracle',
         async () => (liquidityRelay = await deployOracle(defaultWindowSize, defaultGranularity))
       )
-  
+
       beforeEach(
-        'add liquidity action', 
+        'add liquidity action',
         async () => (ActionId = await addLiquidityAction(bigNumberify(100), bigNumberify(100)))
       )
 
@@ -300,23 +346,27 @@ describe('LiquidityRelay', () => {
         previousBlockTimestamp = (await pair.getReserves())[2]
         previousCumulativePrices = [await pair.price0CumulativeLast(), await pair.price1CumulativeLast()]
         await liquidityRelay.update(ActionId)
-        blockTimestamp = previousBlockTimestamp + 5 * 600
+        blockTimestamp = previousBlockTimestamp + 11 * 600
         await mineBlock(provider, blockTimestamp)
         await liquidityRelay.update(ActionId)
       })
 
       it('has cumulative price in previous bucket', async () => {
-        expect(
-          await liquidityRelay.pairObservations(ActionId, observationIndexOf(previousBlockTimestamp))
-        ).to.deep.eq([bigNumberify(previousBlockTimestamp), previousCumulativePrices[0], previousCumulativePrices[1]])
+        expect(await liquidityRelay.pairObservations(ActionId, observationIndexOf(previousBlockTimestamp))).to.deep.eq([
+          bigNumberify(previousBlockTimestamp),
+          previousCumulativePrices[0],
+          previousCumulativePrices[1]
+        ])
       }).retries(5) // test flaky because timestamps aren't mocked
 
       it('has cumulative price in current bucket', async () => {
         const timeElapsed = blockTimestamp - previousBlockTimestamp
         const prices = encodePrice(defaultToken0Amount, defaultToken1Amount)
-        expect(
-          await liquidityRelay.pairObservations(ActionId, observationIndexOf(blockTimestamp))
-        ).to.deep.eq([bigNumberify(blockTimestamp), prices[0].mul(timeElapsed), prices[1].mul(timeElapsed)])
+        expect(await liquidityRelay.pairObservations(ActionId, observationIndexOf(blockTimestamp))).to.deep.eq([
+          bigNumberify(blockTimestamp),
+          prices[0].mul(timeElapsed),
+          prices[1].mul(timeElapsed)
+        ])
       }).retries(5) // test flaky because timestamps aren't mocked
 
       it('provides the current ratio in consult token0', async () => {
@@ -329,50 +379,58 @@ describe('LiquidityRelay', () => {
     })
 
     describe('price changes over period', () => {
-      const hour = 600
+      const sixMin = 600
       beforeEach('add some prices', async () => {
+        console.log('before: ' + (await pair.getReserves()))
         // starting price of 1:2, or token0 = 2token1, token1 = 0.5token0
         await liquidityRelay.update(ActionId) // hour 0, 1:2
+        console.log('1: ' + (await pair.getReserves()))
         // change the price at hour 3 to 1:1 and immediately update
-        await mineBlock(provider, startTime + 1 * hour)
+        await mineBlock(provider, startTime + 3 * sixMin)
         await addLiquidity(defaultToken0Amount, bigNumberify(0))
         await liquidityRelay.update(ActionId)
+        console.log('2: ' + (await pair.getReserves()))
 
         // change the ratios at hour 6:00 to 2:1, don't update right away
-        await mineBlock(provider, startTime + 2 * hour)
+        await mineBlock(provider, startTime + 6 * sixMin)
         await token0.transfer(pair.address, defaultToken0Amount.mul(2))
         await pair.sync()
+        console.log('3: ' + (await pair.getReserves()))
 
         // update at hour 9:00 (price has been 2:1 for 3 hours, invokes counterfactual)
-        await mineBlock(provider, startTime + 3 * hour)
+        await mineBlock(provider, startTime + 9 * sixMin)
         await liquidityRelay.update(ActionId)
+        console.log('4: ' + (await pair.getReserves()))
+
         // move to hour 23:00 so we can check prices
-        await mineBlock(provider, startTime + 4 * hour)
+        await mineBlock(provider, startTime + 11 * sixMin)
+        console.log('5: Reserves ' + (await pair.getReserves()))
+        //console.log("5: " + await liquidityRelay.consult(ActionId, token0.address, 100, token1.address))
       })
 
       it('provides the correct ratio in consult token0', async () => {
         // at hour 23, price of token 0 spent 3 hours at 2, 3 hours at 1, 17 hours at 0.5 so price should
         // be less than 1
-        expect(await liquidityRelay.consult(ActionId, token0.address, 100, token1.address)).to.eq(76)
+        expect(await liquidityRelay.consult(ActionId, token0.address, 100, token1.address)).to.eq(104) //119
       })
 
       it('provides the correct ratio in consult token1', async () => {
         // price should be greater than 1
-        expect(await liquidityRelay.consult(ActionId, token1.address, 100, token0.address)).to.eq(167)
+        expect(await liquidityRelay.consult(ActionId, token1.address, 100, token0.address)).to.eq(131) //120
       })
 
       // price has been 2:1 all of 23 hours
       describe('hour 32', () => {
-        beforeEach('set hour 32', () => mineBlock(provider, startTime + 8 * hour))
+        beforeEach('set hour 32', () => mineBlock(provider, startTime + 14 * sixMin))
         it('provides the correct ratio in consult token0', async () => {
           // at hour 23, price of token 0 spent 3 hours at 2, 3 hours at 1, 17 hours at 0.5 so price should
           // be less than 1
-          expect(await liquidityRelay.consult(ActionId, token0.address, 100, token1.address)).to.eq(50)
+          expect(await liquidityRelay.consult(ActionId, token0.address, 100, token1.address)).to.eq(63) // 50
         })
 
         it('provides the correct ratio in consult token1', async () => {
           // price should be greater than 1
-          expect(await liquidityRelay.consult(ActionId, token1.address, 100, token0.address)).to.eq(200)
+          expect(await liquidityRelay.consult(ActionId, token1.address, 100, token0.address)).to.eq(172) //200
         })
       })
     })

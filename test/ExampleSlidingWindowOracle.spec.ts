@@ -246,22 +246,28 @@ describe('ExampleSlidingWindowOracle', () => {
       const hour = 3600
       beforeEach('add some prices', async () => {
         // starting price of 1:2, or token0 = 2token1, token1 = 0.5token0
+        console.log('before: ' + (await pair.getReserves()))
         await slidingWindowOracle.update(token0.address, token1.address, overrides) // hour 0, 1:2
+        console.log('1: ' + (await pair.getReserves()))
         // change the price at hour 3 to 1:1 and immediately update
         await mineBlock(provider, startTime + 3 * hour)
         await addLiquidity(defaultToken0Amount, bigNumberify(0))
         await slidingWindowOracle.update(token0.address, token1.address, overrides)
+        console.log('2: ' + (await pair.getReserves()))
 
         // change the ratios at hour 6:00 to 2:1, don't update right away
         await mineBlock(provider, startTime + 6 * hour)
         await token0.transfer(pair.address, defaultToken0Amount.mul(2))
         await pair.sync()
+        console.log('3: ' + (await pair.getReserves()))
 
         // update at hour 9:00 (price has been 2:1 for 3 hours, invokes counterfactual)
         await mineBlock(provider, startTime + 9 * hour)
         await slidingWindowOracle.update(token0.address, token1.address, overrides)
+        console.log('4: ' + (await pair.getReserves()))
         // move to hour 23:00 so we can check prices
         await mineBlock(provider, startTime + 23 * hour)
+        console.log('5: ' + (await pair.getReserves()))
       })
 
       it('provides the correct ratio in consult token0', async () => {
