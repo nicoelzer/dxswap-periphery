@@ -1,20 +1,19 @@
 pragma solidity =0.6.6;
-pragma experimental ABIEncoderV2;
 
 import 'dxswap-core/contracts/interfaces/IDXswapFactory.sol';
 import 'dxswap-core/contracts/interfaces/IDXswapPair.sol';
 
-import '../interfaces/IDXswapRouter.sol';
-import '../interfaces/IERC20.sol';
-import '../libraries/FixedPoint.sol';
-import '../libraries/DXswapOracleLibrary.sol';
-import '../libraries/DXswapLibrary.sol';
+import './interfaces/IDXswapRouter.sol';
+import './libraries/TransferHelper.sol';
+import './interfaces/IERC20.sol';
+import './libraries/DXswapOracleLibrary.sol';
+import './libraries/DXswapLibrary.sol';
 
-contract LiquidityRelay {
+contract DXliquidityRelay {
     using FixedPoint for *;
     using SafeMath for uint256;
 
-    event NewLiquidityAddition(
+    event NewLiquidityProvision(
         uint256 _actionId,
         address _tokenA,
         address _tokenB,
@@ -33,13 +32,13 @@ contract LiquidityRelay {
         uint256 _priceSlippage
     );
 
-    event ExecutedLiquidityAddition(uint256 _actionId, uint256 _amountA, uint256 _amountB, uint256 _liquidity);
+    event ExecutedLiquidityProvision(uint256 _actionId, uint256 _amountA, uint256 _amountB, uint256 _liquidity);
     event ExecutedLiquidityRemoval(uint256 _actionId, uint256 _amountA, uint256 _amountB);
 
     enum LiquidityActionState {CREATED, PRICE_OBERSERVATION, PRICE_OBERSERVATION_FINISHED, EXECUTED}
 
     struct LiquidityAction {
-        uint8 action; // 1=Adding Liquidity; 2=Removing Liquidity
+        uint8 action; // 1=Provision Liquidity; 2=Removing Liquidity
         address tokenA;
         address tokenB;
         uint256 amountTokenA;
@@ -61,7 +60,7 @@ contract LiquidityRelay {
     mapping(uint256 => Observation[]) public pairObservations;
 
     uint8 public immutable REMOVAL = 1;
-    uint8 public immutable ADDITION = 2;
+    uint8 public immutable PROVISION = 2;
     address payable public immutable dxdaoAvatar;
     address public immutable factory;
     address public immutable router;
@@ -90,10 +89,10 @@ contract LiquidityRelay {
         uint8 _granularity,
         uint256 _executionBountyWei
     ) public {
-        require(_granularity > 1, 'LiquidityRelay: GRANULARITY');
+        require(_granularity > 1, 'DXliquidityRelay: GRANULARITY');
         require(
             (periodSize = _windowSize / _granularity) * _granularity == _windowSize,
-            'LiquidityRelay: WINDOW_NOT_EVENLY_DIVISIBLE'
+            'DXliquidityRelay: WINDOW_NOT_EVENLY_DIVISIBLE'
         );
         dxdaoAvatar = _dxdaoAvatar;
         factory = factory_;
@@ -103,7 +102,7 @@ contract LiquidityRelay {
         executionBountyWei = _executionBountyWei;
     }
 
-    function createLiquidityAddition(
+    function createLiquidityProvision(
         address tokenA,
         address tokenB,
         uint256 amountTokenA,
@@ -111,27 +110,21 @@ contract LiquidityRelay {
         uint256 deadline,
         uint256 priceSlippage
     ) public payable returns (uint256) {
-        require(msg.sender == dxdaoAvatar, 'LiquidityRelay: CALLER_NOT_DXDAO');
-        require(msg.value >= executionBountyWei.mul(periodSize), 'LiquidityRelay: BOUNTY NOT PROVIDED');
+        require(msg.sender == dxdaoAvatar, 'DXliquidityRelay: CALLER_NOT_DXDAO');
+        require(msg.value >= executionBountyWei.mul(periodSize), 'DXliquidityRelay: BOUNTY NOT PROVIDED');
         require(
             IERC20(tokenA).allowance(dxdaoAvatar, address(this)) >= amountTokenA,
-            'LiquidityRelay: INSUFFICIENT_ALLOWANCE_TOKEN_A'
+            'DXliquidityRelay: INSUFFICIENT_ALLOWANCE_TOKEN_A'
         );
         require(
             IERC20(tokenB).allowance(dxdaoAvatar, address(this)) >= amountTokenB,
-            'LiquidityRelay: INSUFFICIENT_ALLOWANCE_TOKEN_B'
-        );
-        require(
-            IERC20(tokenA).transferFrom(dxdaoAvatar, address(this), amountTokenA),
-            'LiquidityRelay: TRANSFER_FAILED_TOKEN_A'
-        );
-        require(
-            IERC20(tokenB).transferFrom(dxdaoAvatar, address(this), amountTokenB),
-            'LiquidityRelay: TRANSFER_FAILED_TOKEN_B'
+            'DXliquidityRelay: INSUFFICIENT_ALLOWANCE_TOKEN_B'
         );
 
-        uint256 actionId = createLiquidityAction(ADDITION, tokenA, tokenB, amountTokenA, amountTokenB, 0, deadline, priceSlippage);
-        emit NewLiquidityAddition(actionId, tokenA, tokenB, amountTokenA, amountTokenB, deadline, priceSlippage);
+        TransferHelper.safeTransferFrom(tokenA, msg.sender, address(this), amountTokenA);
+        TransferHelper.safeTransferFrom(tokenB, msg.sender, address(this), amountTokenB);
+        uint256 actionId = createLiquidityAction(PROVISION, tokenA, tokenB, amountTokenA, amountTokenB, 0, deadline, priceSlippage);
+        emit NewLiquidityProvision(actionId, tokenA, tokenB, amountTokenA, amountTokenB, deadline, priceSlippage);
         return actionId;
     }
 
@@ -142,12 +135,12 @@ contract LiquidityRelay {
         uint256 deadline,
         uint256 priceSlippage
     ) public payable returns (uint256) {
-        require(msg.sender == dxdaoAvatar, 'LiquidityRelay: CALLER_NOT_DXDAO');
-        require(msg.value == executionBountyWei.mul(periodSize), 'LiquidityRelay: BOUNTY NOT PROVIDED');
+        require(msg.sender == dxdaoAvatar, 'DXliquidityRelay: CALLER_NOT_DXDAO');
+        require(msg.value >= executionBountyWei.mul(periodSize), 'DXliquidityRelay: BOUNTY NOT PROVIDED');
 
         address pair = DXswapLibrary.pairFor(factory, tokenA, tokenB);
-        require(IERC20(pair).approve(router, liquidity), 'LiquidityRelay: INSUFFICIENT_ALLOWANCE_LIQUIDITY');
 
+        TransferHelper.safeApprove(pair, router, liquidity);
         uint256 actionId = createLiquidityAction(REMOVAL, tokenA, tokenB, 0, 0, liquidity,  deadline, priceSlippage);
         emit NewLiquidityRemoval(actionId, tokenA, tokenB, liquidity, deadline, priceSlippage);
         return actionId;
@@ -191,10 +184,10 @@ contract LiquidityRelay {
     }
 
     function update(uint256 _actionId) public payable {
-        require(_actionId <= liquidityActionsIndex, 'LiquidityRelay: INVALID_ACTIONID');
+        require(_actionId <= liquidityActionsIndex, 'DXliquidityRelay: INVALID_ACTIONID');
         require(
             liquidityActions[_actionId].state == LiquidityActionState.PRICE_OBERSERVATION,
-            'LiquidityRelay: STATE_NOT_OBSERVATION'
+            'DXliquidityRelay: STATE_NOT_OBSERVATION'
         );
 
         address pair = liquidityActions[_actionId].pair;
@@ -223,18 +216,18 @@ contract LiquidityRelay {
         }
 
         // send the bounty to the address that executed this function
-        msg.sender.transfer(executionBountyWei);
+        TransferHelper.safeTransferETH(msg.sender, executionBountyWei);
     }
 
     function executeLiquidityAction(uint256 _actionId) public {
-        require(_actionId <= liquidityActionsIndex, 'LiquidityRelay: INVALID_ACTIONID');
+        require(_actionId <= liquidityActionsIndex, 'DXliquidityRelay: INVALID_ACTIONID');
         require(
             liquidityActions[_actionId].state == LiquidityActionState.PRICE_OBERSERVATION_FINISHED,
-            'LiquidityRelay: NOT_FINISHED'
+            'DXliquidityRelay: NOT_FINISHED'
         );
         require(
             block.timestamp <= liquidityActions[_actionId].finishedTimestamp.add(liquidityActions[_actionId].deadline),
-            'LiquidityRelay: DEADLINE_EXCEEDED'
+            'DXliquidityRelay: DEADLINE_EXCEEDED'
         );
 
         uint256 tokenAveragePriceA = consult(
@@ -255,26 +248,21 @@ contract LiquidityRelay {
 
         uint deadline = liquidityActions[_actionId].deadline;
 
-        if(liquidityActions[_actionId].action == ADDITION) {
+        if(liquidityActions[_actionId].action == PROVISION) {
 
           require(
             IERC20(liquidityActions[_actionId].tokenA).balanceOf(address(this)) >=
                 liquidityActions[_actionId].amountTokenA,
-            'LiquidityRelay: INSUFFICIENT_BALANCE_TOKEN_A'
+            'DXliquidityRelay: INSUFFICIENT_BALANCE_TOKEN_A'
           );
           require(
               IERC20(liquidityActions[_actionId].tokenB).balanceOf(address(this)) >=
                   liquidityActions[_actionId].amountTokenB,
-              'LiquidityRelay: INSUFFICIENT_BALANCE_TOKEN_B'
+              'DXliquidityRelay: INSUFFICIENT_BALANCE_TOKEN_B'
           );
-          require(
-              IERC20(liquidityActions[_actionId].tokenA).approve(router, liquidityActions[_actionId].amountTokenA),
-              'LiquidityRelay: APPROVE_FAILED_TOKEN_A'
-          );
-          require(
-              IERC20(liquidityActions[_actionId].tokenB).approve(router, liquidityActions[_actionId].amountTokenB),
-              'LiquidityRelay: APPROVE_FAILED_TOKEN_B'
-          );
+
+          TransferHelper.safeApprove(liquidityActions[_actionId].tokenA, router, liquidityActions[_actionId].amountTokenA);
+          TransferHelper.safeApprove(liquidityActions[_actionId].tokenB, router, liquidityActions[_actionId].amountTokenB);
 
           (uint256 amountA, uint256 amountB, uint256 liquidity) = IDXswapRouter(router).addLiquidity(
             liquidityActions[_actionId].tokenA,
@@ -288,22 +276,24 @@ contract LiquidityRelay {
           );
 
           liquidityActions[_actionId].state = LiquidityActionState.EXECUTED;
-          emit ExecutedLiquidityAddition(_actionId, amountA, amountB, liquidity);
+          emit ExecutedLiquidityProvision(_actionId, amountA, amountB, liquidity);
 
-          // Send back tokenA Fragments
-          IERC20(liquidityActions[_actionId].tokenA).transfer(
-              dxdaoAvatar,
-              liquidityActions[_actionId].amountTokenA.sub(amountA)
+          // Send back token Fragments
+          TransferHelper.safeTransfer(
+            liquidityActions[_actionId].tokenA, 
+            dxdaoAvatar, 
+            liquidityActions[_actionId].amountTokenA.sub(amountA)
           );
-          // Send back tokenB Fragments
-          IERC20(liquidityActions[_actionId].tokenA).transfer(
-              dxdaoAvatar,
-              liquidityActions[_actionId].amountTokenB.sub(amountB)
+
+          TransferHelper.safeTransfer(
+            liquidityActions[_actionId].tokenB, 
+            dxdaoAvatar, 
+            liquidityActions[_actionId].amountTokenB.sub(amountB)
           );
 
           /* Reset approval for router */
-          IERC20(liquidityActions[_actionId].tokenA).approve(router, 0);
-          IERC20(liquidityActions[_actionId].tokenB).approve(router, 0);
+          TransferHelper.safeApprove(liquidityActions[_actionId].tokenA, router, 0);
+          TransferHelper.safeApprove(liquidityActions[_actionId].tokenB, router, 0);
 
         } else if (liquidityActions[_actionId].action == REMOVAL) {
 
@@ -333,7 +323,6 @@ contract LiquidityRelay {
         view
         returns (Observation storage firstObservation)
     {
-        address pair = liquidityActions[_actionId].pair;
         uint8 observationIndex = observationIndexOf(block.timestamp);
         // no overflow issue. if observationIndex + 1 overflows, result is still zero.
         uint8 firstObservationIndex = (observationIndex + 1) % granularity;
@@ -368,9 +357,9 @@ contract LiquidityRelay {
         Observation storage firstObservation = getFirstObservationInWindow(_actionId);
 
         uint256 timeElapsed = block.timestamp - firstObservation.timestamp;
-        require(timeElapsed <= windowSize, 'LiquidityRelay: MISSING_HISTORICAL_OBSERVATION');
+        require(timeElapsed <= windowSize, 'DXliquidityRelay: MISSING_HISTORICAL_OBSERVATION');
         // should never happen.
-        require(timeElapsed >= windowSize - periodSize * 2, 'LiquidityRelay: UNEXPECTED_TIME_ELAPSED');
+        require(timeElapsed >= windowSize - periodSize * 2, 'DXliquidityRelay: UNEXPECTED_TIME_ELAPSED');
 
         (uint256 price0Cumulative, uint256 price1Cumulative, ) = DXswapOracleLibrary.currentCumulativePrices(pair);
         (address token0, ) = DXswapLibrary.sortTokens(tokenIn, tokenOut);
@@ -383,12 +372,13 @@ contract LiquidityRelay {
     }
 
     function emergencyERC20Withdraw(address token, uint256 amount) public {
-        require(msg.sender == dxdaoAvatar, 'LiquidityRelay: CALLER_NOT_DXDAO');
-        IERC20(token).transfer(dxdaoAvatar, amount);
+        require(msg.sender == dxdaoAvatar, 'DXliquidityRelay: CALLER_NOT_DXDAO');
+
+        TransferHelper.safeTransfer(token, dxdaoAvatar, amount);
     }
 
     function emergencyEthWithdraw(uint256 amount) public {
-        require(msg.sender == dxdaoAvatar, 'LiquidityRelay: CALLER_NOT_DXDAO');
-        dxdaoAvatar.transfer(amount);
+        require(msg.sender == dxdaoAvatar, 'DXliquidityRelay: CALLER_NOT_DXDAO');
+        TransferHelper.safeTransferETH(dxdaoAvatar, amount);
     }
 }
