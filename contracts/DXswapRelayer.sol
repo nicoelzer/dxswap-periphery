@@ -9,7 +9,7 @@ import './interfaces/IERC20.sol';
 import './libraries/DXswapOracleLibrary.sol';
 import './libraries/DXswapLibrary.sol';
 
-contract DXliquidityRelay {
+contract DXswapRelayer {
     using FixedPoint for *;
     using SafeMath for uint256;
 
@@ -20,7 +20,7 @@ contract DXliquidityRelay {
         uint256 _amountTokenA,
         uint256 _amountTokenB,
         uint256 _deadline,
-        uint256 _priceSlippage
+        uint256 _priceTolerance
     );
 
     event NewLiquidityRemoval(
@@ -29,7 +29,7 @@ contract DXliquidityRelay {
         address _tokenB,
         uint256 _liquidity,
         uint256 _deadline,
-        uint256 _priceSlippage
+        uint256 _priceTolerance
     );
 
     event ExecutedLiquidityProvision(uint256 _actionId, uint256 _amountA, uint256 _amountB, uint256 _liquidity);
@@ -45,7 +45,7 @@ contract DXliquidityRelay {
         uint256 amountTokenB;
         uint256 liquidity;
         uint256 deadline;
-        uint256 priceSlippage;
+        uint256 priceTolerance;
         uint256 finishedTimestamp;
         address pair;
         LiquidityActionState state;
@@ -108,7 +108,7 @@ contract DXliquidityRelay {
         uint256 amountTokenA,
         uint256 amountTokenB,
         uint256 deadline,
-        uint256 priceSlippage
+        uint256 priceTolerance
     ) public payable returns (uint256) {
         require(msg.sender == dxdaoAvatar, 'DXliquidityRelay: CALLER_NOT_DXDAO');
         require(msg.value >= executionBountyWei.mul(periodSize), 'DXliquidityRelay: BOUNTY NOT PROVIDED');
@@ -120,11 +120,8 @@ contract DXliquidityRelay {
             IERC20(tokenB).allowance(dxdaoAvatar, address(this)) >= amountTokenB,
             'DXliquidityRelay: INSUFFICIENT_ALLOWANCE_TOKEN_B'
         );
-
-        TransferHelper.safeTransferFrom(tokenA, msg.sender, address(this), amountTokenA);
-        TransferHelper.safeTransferFrom(tokenB, msg.sender, address(this), amountTokenB);
-        uint256 actionId = createLiquidityAction(PROVISION, tokenA, tokenB, amountTokenA, amountTokenB, 0, deadline, priceSlippage);
-        emit NewLiquidityProvision(actionId, tokenA, tokenB, amountTokenA, amountTokenB, deadline, priceSlippage);
+        uint256 actionId = createLiquidityAction(PROVISION, tokenA, tokenB, amountTokenA, amountTokenB, 0, deadline, priceTolerance);
+        emit NewLiquidityProvision(actionId, tokenA, tokenB, amountTokenA, amountTokenB, deadline, priceTolerance);
         return actionId;
     }
 
@@ -133,7 +130,7 @@ contract DXliquidityRelay {
         address tokenB,
         uint256 liquidity,
         uint256 deadline,
-        uint256 priceSlippage
+        uint256 priceTolerance
     ) public payable returns (uint256) {
         require(msg.sender == dxdaoAvatar, 'DXliquidityRelay: CALLER_NOT_DXDAO');
         require(msg.value >= executionBountyWei.mul(periodSize), 'DXliquidityRelay: BOUNTY NOT PROVIDED');
@@ -141,8 +138,8 @@ contract DXliquidityRelay {
         address pair = DXswapLibrary.pairFor(factory, tokenA, tokenB);
 
         TransferHelper.safeApprove(pair, router, liquidity);
-        uint256 actionId = createLiquidityAction(REMOVAL, tokenA, tokenB, 0, 0, liquidity,  deadline, priceSlippage);
-        emit NewLiquidityRemoval(actionId, tokenA, tokenB, liquidity, deadline, priceSlippage);
+        uint256 actionId = createLiquidityAction(REMOVAL, tokenA, tokenB, 0, 0, liquidity,  deadline, priceTolerance);
+        emit NewLiquidityRemoval(actionId, tokenA, tokenB, liquidity, deadline, priceTolerance);
         return actionId;
     }
 
@@ -154,11 +151,10 @@ contract DXliquidityRelay {
         uint256 amountTokenB,
         uint256 liquidity,
         uint256 deadline,
-        uint256 priceSlippage
+        uint256 priceTolerance
     ) internal returns (uint256) {
 
       address pair = DXswapLibrary.pairFor(factory, tokenA, tokenB);
-
       uint256 currentIndex = liquidityActionsIndex;
       liquidityActionsIndex++;
 
@@ -171,7 +167,7 @@ contract DXliquidityRelay {
               amountTokenB: amountTokenB,
               liquidity: liquidity,
               deadline: deadline,
-              priceSlippage: priceSlippage,
+              priceTolerance: priceTolerance,
               finishedTimestamp: 0,
               pair: pair,
               state: LiquidityActionState.CREATED
@@ -230,22 +226,21 @@ contract DXliquidityRelay {
             'DXliquidityRelay: DEADLINE_EXCEEDED'
         );
 
-        uint256 tokenAveragePriceA = consult(
+        uint256 tokenAaveragePrice = consult(
             _actionId,
             liquidityActions[_actionId].tokenA,
             liquidityActions[_actionId].amountTokenA,
             liquidityActions[_actionId].tokenB
         );
-        uint256 tokenAveragePriceB = consult(
+        uint256 tokenBaveragePrice = consult(
             _actionId,
             liquidityActions[_actionId].tokenB,
             liquidityActions[_actionId].amountTokenB,
             liquidityActions[_actionId].tokenA
         );
 
-        uint256 tokenMinA = tokenAveragePriceA.mul(1 - liquidityActions[_actionId].priceSlippage / 1000);
-        uint256 tokenMinB = tokenAveragePriceB.mul(1 - liquidityActions[_actionId].priceSlippage / 1000);
-
+        uint256 tokenMinA = tokenAaveragePrice.mul(1 - liquidityActions[_actionId].priceTolerance / 1000);
+        uint256 tokenMinB = tokenBaveragePrice.mul(1 - liquidityActions[_actionId].priceTolerance / 1000);
         uint deadline = liquidityActions[_actionId].deadline;
 
         if(liquidityActions[_actionId].action == PROVISION) {
