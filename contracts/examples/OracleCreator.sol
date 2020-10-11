@@ -3,8 +3,9 @@ pragma solidity =0.6.6;
 import './../libraries/TransferHelper.sol';
 import './../libraries/DXswapOracleLibrary.sol';
 import './../libraries/DXswapLibrary.sol';
+import './../libraries/SafeMath.sol';
 
-contract OracleCreator {
+contract OracleCreator {    
     using FixedPoint for *;
     using SafeMath for uint256;
 

@@ -1,14 +1,11 @@
 pragma solidity =0.6.6;
 
+import './OracleCreator.sol';
 import './../interfaces/IDXswapFactory.sol';
-import './../interfaces/IDXswapPair.sol';
 import './../interfaces/IDXswapRouter.sol';
 import './../libraries/TransferHelper.sol';
 import './../interfaces/IERC20.sol';
-import './../libraries/DXswapOracleLibrary.sol';
-import './../libraries/DXswapLibrary.sol';
 import './../libraries/SafeMath.sol';
-import './OracleCreator.sol';
 
 contract DXswapRelayer {
     using FixedPoint for *;
@@ -116,7 +113,7 @@ contract DXswapRelayer {
         address pair = factory.getPair(tokenA, tokenB);
         (uint256 dxReserveA, uint256 dxReserveB) = DXswapLibrary.getReserves(address(factory), tokenA, tokenB);
 
-        if (minReserveA == 0 && minReserveB == 0 && dxReserveA == 0 && dxReserveB == 0) {
+        if (minReserveA == 0 && minReserveB == 0) {
             /* For initial liquidity provision can be deployed immediatly */
             _pool(tokenA, tokenB, amountA, amountB, priceTolerance);
             commitmentId = 0;
@@ -156,42 +153,35 @@ contract DXswapRelayer {
         require(oracleCreator.getOracleStatus(commitmentId) == true, 'DXliquidityRelay: OBSERVATION_RUNNING');
         require(block.timestamp <= commitments[commitmentId].deadline, 'DXliquidityRelay: DEADLINE_REACHED');
 
-        uint256 amountA = oracleCreator.consult(commitments[commitmentId].oracleId, commitments[commitmentId].tokenA, commitments[commitmentId].amountA, commitments[commitmentId].tokenB);
-        uint256 amountB = oracleCreator.consult(commitments[commitmentId].oracleId, commitments[commitmentId].tokenB, commitments[commitmentId].amountB, commitments[commitmentId].tokenA);
-
+        address tokenA = commitments[commitmentId].tokenA;
+        address tokenB = commitments[commitmentId].tokenB;
+        uint256 desiredAmountA = commitments[commitmentId].amountA;
+        uint256 desiredAmountB = commitments[commitmentId].amountB;
+        uint256 amountA = oracleCreator.consult(commitments[commitmentId].oracleId, tokenA, desiredAmountA, tokenB);
+        uint256 amountB = oracleCreator.consult(commitments[commitmentId].oracleId, tokenB, desiredAmountB, tokenA);
         commitments[commitmentId].executed = true;
-        _pool(commitments[commitmentId].tokenA, commitments[commitmentId].tokenB, amountA, amountB, commitments[commitmentId].priceTolerance);
+
+        _pool(tokenA, tokenB, amountA, amountB, commitments[commitmentId].priceTolerance);
     }
 
     function withdrawTerminatedCommitment(uint256 commitmentId) external {
         require(block.timestamp > commitments[commitmentId].deadline, 'DXliquidityRelay: DEADLINE_NOT_REACHED');
         require(commitments[commitmentId].executed == false, 'DXliquidityRelay: COMMITMENT_EXECUTED');
-
+        address tokenA = commitments[commitmentId].tokenA;
+        address tokenB = commitments[commitmentId].tokenB;
+        uint256 amountA = commitments[commitmentId].amountA;
+        uint256 amountB = commitments[commitmentId].amountB;
         commitments[commitmentId].executed == true;
 
-        if (commitments[commitmentId].tokenA == address(0) || commitments[commitmentId].tokenB == address(0)) {
-            address token = commitments[commitmentId].tokenA == address(0)
-                ? commitments[commitmentId].tokenB
-                : commitments[commitmentId].tokenA;
-            uint256 valueETH = commitments[commitmentId].tokenA == address(0)
-                ? commitments[commitmentId].amountA
-                : commitments[commitmentId].amountB;
-            uint256 amountToken = commitments[commitmentId].tokenA == address(0)
-                ? commitments[commitmentId].amountB
-                : commitments[commitmentId].amountA;
+        if (tokenA == address(0) || tokenB == address(0)) {
+            address token = tokenA== address(0) ? tokenB : tokenA;
+            uint256 valueETH = tokenA == address(0) ? amountA : amountB;
+            uint256 amountToken = tokenA == address(0) ? amountB : amountA;
             TransferHelper.safeTransferETH(dxdaoAvatar, valueETH);
             TransferHelper.safeTransfer(token, dxdaoAvatar, amountToken);
         } else {
-            TransferHelper.safeTransfer(
-                commitments[commitmentId].tokenA,
-                dxdaoAvatar,
-                commitments[commitmentId].amountA
-            );
-            TransferHelper.safeTransfer(
-                commitments[commitmentId].tokenB,
-                dxdaoAvatar,
-                commitments[commitmentId].amountB
-            );
+            TransferHelper.safeTransfer(tokenA, dxdaoAvatar, amountA);
+            TransferHelper.safeTransfer(tokenB, dxdaoAvatar, amountB);
         }
     }
 
