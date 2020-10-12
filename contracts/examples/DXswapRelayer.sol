@@ -31,6 +31,8 @@ contract DXswapRelayer {
         uint256 minReserveA;
         uint256 minReserveB;
         uint256 deadline;
+        uint8 maxWindows;
+        uint256 executionBounty;
         uint256 oracleId;
         bool executed;
     }
@@ -106,32 +108,10 @@ contract DXswapRelayer {
             TransferHelper.safeTransferFrom(tokenA, dxdaoAvatar, address(this), amountA);
             TransferHelper.safeTransferFrom(tokenB, dxdaoAvatar, address(this), amountB);
         }
-        IDXswapFactory factory = IDXswapFactory(getPriceOracleFactory(tokenA, tokenB, minReserveA, minReserveB));
-        if (factory.getPair(tokenA, tokenB) == address(0)) {
-            factory.createPair(tokenA, tokenB);
-        }
-        address pair = factory.getPair(tokenA, tokenB);
-        (uint256 dxReserveA, uint256 dxReserveB) = DXswapLibrary.getReserves(address(factory), tokenA, tokenB);
 
-        if (minReserveA == 0 && minReserveB == 0) {
-            /* For initial liquidity provision can be deployed immediatly */
-            _pool(tokenA, tokenB, amountA, amountB, priceTolerance);
-            commitmentId = 0;
-        } else {
-            /* create oracle to calculate average price ofter time before providing liquidity*/
-            (uint256 windowSize, uint8 granularity) = consultOracleParameters(
-                factory,
-                tokenA,
-                tokenB,
-                amountA,
-                amountB,
-                maxWindows
-            );
-            uint256 oracleId = oracleCreator.createOracle(windowSize, pair, granularity, executionBounty);
-            commitmentCount++;
-            commitmentId = commitmentCount;
-
-            commitments[commitmentId] = Commitment(
+        commitmentCount++;
+        commitmentId = commitmentCount;
+        commitments[commitmentId] = Commitment(
                 PROVISION,
                 tokenA,
                 tokenB,
@@ -141,13 +121,58 @@ contract DXswapRelayer {
                 minReserveA,
                 minReserveB,
                 deadline,
-                oracleId,
+                maxWindows,
+                executionBounty,
+                0,
                 false
             );
-        }
+        // STACK TO DEEP: _commitLiquidity(commitmentId);
+        return commitmentId;
     }
 
+    function _commitLiquidity (uint256 commitmentId) internal{
+        address tokenA = commitments[commitmentId].tokenA;
+        address tokenB = commitments[commitmentId].tokenB;
+        uint256 amountA = commitments[commitmentId].amountA;
+        uint256 amountB = commitments[commitmentId].amountB;
+        uint256 priceTolerance = commitments[commitmentId].priceTolerance;
+        uint256 minReserveA = commitments[commitmentId].minReserveA;
+        uint256 minReserveB = commitments[commitmentId].minReserveB;
+        uint8 maxWindows = commitments[commitmentId].maxWindows;
+        uint256 executionBounty = commitments[commitmentId].executionBounty;
+
+        IDXswapFactory factory = IDXswapFactory(getPriceOracleFactory(tokenA, tokenB, minReserveA, minReserveB));
+        if (factory.getPair(tokenA, tokenB) == address(0)) {
+            factory.createPair(tokenA, tokenB);
+        }
+        address pair = factory.getPair(tokenA, tokenB);
+        (uint256 dxReserveA, uint256 dxReserveB) = DXswapLibrary.getReserves(address(factory), tokenA, tokenB);
+
+        if (minReserveA == 0 && minReserveB == 0 && dxReserveA == 0 && dxReserveB == 0) {
+            /* For initial liquidity provision can be deployed immediatly */
+            _pool(tokenA, tokenB, amountA, amountB, priceTolerance);
+            commitmentId = 0;
+        } else {
+            /* create oracle to calculate average price over time before providing liquidity*/
+            (uint256 windowSize, uint8 granularity) = consultOracleParameters(
+                factory,
+                tokenA,
+                tokenB,
+                amountA,
+                amountB,
+                maxWindows
+            );
+            uint256 oracleId = oracleCreator.createOracle(windowSize, pair, granularity, executionBounty);
+            commitments[commitmentId].oracleId = oracleId;
+        }
+    }
+    
+    /**
+     * @dev Execute liquidity provision after price observation.
+     * @param commitmentId to reference the commitment.
+     */
     function executeLiquidityProvision(uint256 commitmentId) external {
+        require(commitmentId != 0, 'DXliquidityRelay: INVALID_COMMITMENT');
         require(commitmentId <= commitmentCount, 'DXliquidityRelay: INVALID_COMMITMENT');
         require(commitments[commitmentId].executed == false, 'DXliquidityRelay: COMMITMENT_EXECUTED');
         require(oracleCreator.getOracleStatus(commitmentId) == true, 'DXliquidityRelay: OBSERVATION_RUNNING');
@@ -164,6 +189,10 @@ contract DXswapRelayer {
         _pool(tokenA, tokenB, amountA, amountB, commitments[commitmentId].priceTolerance);
     }
 
+    /**
+     * @dev Withdraw a commitment that timed out.
+     * @param commitmentId to reference the commitment.
+     */
     function withdrawTerminatedCommitment(uint256 commitmentId) external {
         require(block.timestamp > commitments[commitmentId].deadline, 'DXliquidityRelay: DEADLINE_NOT_REACHED');
         require(commitments[commitmentId].executed == false, 'DXliquidityRelay: COMMITMENT_EXECUTED');
@@ -184,7 +213,7 @@ contract DXswapRelayer {
             TransferHelper.safeTransfer(tokenB, dxdaoAvatar, amountB);
         }
     }
-
+    
     function _pool(
         address _tokenA,
         address _tokenB,
@@ -252,7 +281,7 @@ contract DXswapRelayer {
         uint256 amountB
     ) internal view returns (uint256 poolStake) {
         (uint256 reserveA, uint256 reserveB) = DXswapLibrary.getReserves(factory, tokenA, tokenB);
-        poolStake = (amountA.add(amountB)) / ((reserveA.add(reserveB))).mul(100);
+        poolStake = (amountA.add(amountB)) / ((reserveA.add(reserveB))).mul(10000);
     }
 
     function consultOracleParameters(
@@ -264,8 +293,23 @@ contract DXswapRelayer {
         uint256 maxWindows
     ) internal view returns (uint256 windowSize, uint8 granularity) {
         uint256 poolStake = getPoolStake(address(factory), tokenA, tokenB, amountA, amountB);
-        /* TODO: WindowSize calculate to be refined */
-        windowSize = baseWindowSize.mul(poolStake) <= maxWindows ? baseWindowSize.mul(poolStake) : maxWindows;
+        // poolStake: 0.1% = 10; 1=100; 10% = 1000;
+        uint256 windows;
+        if(poolStake < 10) {
+          windows = 3;
+        } else if (poolStake >= 10 && poolStake < 25){
+          windows = 4;
+        } else if (poolStake >= 25 && poolStake < 50){
+          windows = 5;
+        } else if (poolStake >= 50 && poolStake < 100){
+          windows = 6;
+        } else if (poolStake >= 100 && poolStake < 300){
+          windows = 6;
+        } else {
+          windows = 10;
+        }
+        windows = windows <= maxWindows ? windows : maxWindows;
+        windowSize = windows.mul(baseWindowSize);
         granularity = uint8(windowSize / baseWindowSize);
     }
 
