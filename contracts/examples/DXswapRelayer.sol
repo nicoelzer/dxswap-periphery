@@ -6,33 +6,19 @@ import './../interfaces/IDXswapRouter.sol';
 import './../libraries/TransferHelper.sol';
 import './../interfaces/IERC20.sol';
 import './../libraries/SafeMath.sol';
+import './../libraries/DXswapLibrary.sol';
 
 contract DXswapRelayer {
     using FixedPoint for *;
     using SafeMath for uint256;
 
     event NewOrder(
-        uint256 _orderId,
-        uint8 _action,
-        address _tokenA,
-        address _tokenB,
-        uint256 _amountA,
-        uint256 _amountB,
-        uint256 _priceTolerance,
-        uint256 _minReserveA,
-        uint256 _minReserveB,
-        uint256 _deadline,
-        uint8 _maxWindows,
-        uint256 _executionBounty,
-        uint256 _oracleId,
-        address _factory
-    );
-
-    event OrderTerminated(
-        uint256 _orderId
+        uint256 indexed _orderId,
+        uint8 indexed _action
     );
 
     event ExecutedPool(
+        uint256 indexed _orderId,
         address _tokenA,
         address _tokenB,
         uint256 _amountTokenA,
@@ -41,11 +27,16 @@ contract DXswapRelayer {
     );
 
     event ExecutedUnpool(
+        uint256 indexed _orderId,
         address _tokenA,
         address _tokenB,
         uint256 _amountTokenA,
         uint256 _amountTokenB,
         uint256 _liquidity
+    );
+
+    event ExpiredOrderWithdrawn(
+        uint256 indexed _orderId
     );
 
     struct Order {
@@ -54,9 +45,10 @@ contract DXswapRelayer {
         address tokenB;
         uint256 amountA;
         uint256 amountB;
+        uint256 liquidity;
         uint256 priceTolerance;
-        uint256 minReserveA;
-        uint256 minReserveB;
+        uint256 minReserve;
+        address indirectPricingToken;
         uint256 deadline;
         uint8 maxWindows;
         uint256 executionBounty;
@@ -72,11 +64,11 @@ contract DXswapRelayer {
     address public immutable uniswapRouter;
     uint256 public immutable basewindowTime;
 
-    uint256 public immutable PartsPerMillion = 1000000;
+    uint256 public immutable PARTSPERMILLION = 1000000;
     uint8 public immutable PROVISION = 1;
     uint8 public immutable REMOVAL = 2;
     uint8 public immutable SWAP = 3;
-    OracleCreator oracleCreator;
+    OracleCreator public oracleCreator;
     uint256 public orderCount;
 
     mapping(uint256 => Order) orders;
@@ -103,47 +95,61 @@ contract DXswapRelayer {
         uint256 amountA,
         uint256 amountB,
         uint256 priceTolerance,
-        uint256 minReserveA,
-        uint256 minReserveB,
+        uint256 minReserve,
         uint8 maxWindows,
-        uint256 executionBounty,
-        uint256 deadline
-    ) external payable returns (uint256 orderId) {
-        require(msg.sender == owner, 'DXliquidityRelay: CALLER_NOT_OWNER');
-        require(tokenA != tokenB, 'DXliquidityRelay: INVALID_PAIR');
-        require(amountA > 0 && amountB > 0, 'DXliquidityRelay: INVALID_LIQUIDITY_AMOUNT');
-        require(priceTolerance <= PartsPerMillion, 'DXliquidityRelay: INVALID_TOLERANCE');
-        require(maxWindows <= 255, 'DXliquidityRelay: INVALID_MAXWINDOWS');
-        require(block.timestamp <= deadline, 'DXliquidityRelay: DEADLINE_REACHED');
+        uint256 deadline,
+        address indirectPricingToken,
+        address factory
+    ) external payable returns (uint256 orderIndex) {
+        require(msg.sender == owner, 'DXswapRelayer: CALLER_NOT_OWNER');
+        require(tokenA != tokenB, 'DXswapRelayer: INVALID_PAIR');
+        require(tokenA < tokenB, 'DXswapRelayer: INVALID_TOKEN_ORDER');
+        require(amountA > 0 && amountB > 0, 'DXswapRelayer: INVALID_LIQUIDITY_AMOUNT');
+        require(priceTolerance <= PARTSPERMILLION, 'DXswapRelayer: INVALID_TOLERANCE');
+        require(block.timestamp <= deadline, 'DXswapRelayer: DEADLINE_REACHED');
 
-        if (tokenA == address(0) || tokenB == address(0)) {
-            address token = tokenA == address(0) ? tokenB : tokenA;
-            uint256 valueETH = tokenA == address(0) ? amountA : amountB;
-            uint256 amountToken = tokenA == address(0) ? amountB : amountA;
-            require(msg.value >= valueETH, 'DXliquidityRelay: INSUFFIENT_ETH');
-            TransferHelper.safeTransferFrom(token, owner, address(this), amountToken);
+        if (tokenA == address(0)) {
+            require(msg.value >= amountA, 'DXswapRelayer: INSUFFIENT_ETH');
+            TransferHelper.safeTransferFrom(tokenB, owner, address(this), amountB);
         } else {
             TransferHelper.safeTransferFrom(tokenA, owner, address(this), amountA);
             TransferHelper.safeTransferFrom(tokenB, owner, address(this), amountB);
         }
-        
-        orders[orderId] = Order(
+
+        address pair = DXswapLibrary.pairFor(address(factory), tokenA, tokenB);
+        (uint reserveA, uint reserveB,) = IDXswapPair(pair).getReserves();
+
+        orderIndex = _getOrderIndex();
+        orders[orderIndex] = Order(
             PROVISION,
             tokenA,
             tokenB,
             amountA,
             amountB,
+            0,
             priceTolerance,
-            minReserveA,
-            minReserveB,
+            minReserve,
+            indirectPricingToken,
             deadline,
             maxWindows,
-            executionBounty,
             0,
-            address(0),
+            0,
+            factory,
             false
         );
-        return _getOrderIndex();
+        
+        if (minReserve == 0 && reserveA == 0 && reserveB == 0) {
+            /* For initial liquidity provision can be deployed immediatly */
+            _pool(orderIndex, tokenA, tokenB, amountA, amountB, priceTolerance);
+            orders[orderIndex].executed = true;
+        } else {
+            /* create oracle to calculate average price over time before providing liquidity*/
+            uint256 windowTime = consultOracleParameters(amountA, amountB, reserveA, reserveB, maxWindows);
+            uint256 oracleId = oracleCreator.createOracle(windowTime, pair, uint8(windowTime/basewindowTime), 0);
+            orders[orderIndex].oracleId = oracleId;
+            oracleCreator.update(oracleId);
+        }
+        emit NewOrder(orderIndex, PROVISION);
     }
 
     function orderLiquidityRemoval(
@@ -153,116 +159,91 @@ contract DXswapRelayer {
         uint256 amountA,
         uint256 amountB,
         uint256 priceTolerance,
-        uint256 minReserveA,
-        uint256 minReserveB,
+        uint256 minReserve,
         uint8 maxWindows,
-        uint256 executionBounty,
-        uint256 deadline
-    ) external payable returns (uint256 orderId) {
-        require(msg.sender == owner, 'DXliquidityRelay: CALLER_NOT_OWNER');
-        require(tokenA != tokenB, 'DXliquidityRelay: INVALID_PAIR');
-        require(amountA > 0 && amountB > 0 && liquidity > 0, 'DXliquidityRelay: INVALID_LIQUIDITY_AMOUNT');
-        require(priceTolerance <= PartsPerMillion, 'DXliquidityRelay: INVALID_TOLERANCE');
-        require(maxWindows <= 255, 'DXliquidityRelay: INVALID_MAXWINDOWS');
-        require(block.timestamp <= deadline, 'DXliquidityRelay: DEADLINE_REACHED');
+        uint256 deadline,
+        address factory
+    ) external payable returns (uint256 orderIndex) {
+        require(msg.sender == owner, 'DXswapRelayer: CALLER_NOT_OWNER');
+        require(tokenA != tokenB, 'DXswapRelayer: INVALID_PAIR');
+        require(tokenA < tokenB, 'DXswapRelayer: INVALID_TOKEN_ORDER');
+        require(amountA > 0 && amountB > 0 && liquidity > 0, 'DXswapRelayer: INVALID_LIQUIDITY_AMOUNT');
+        require(priceTolerance <= PARTSPERMILLION, 'DXswapRelayer: INVALID_TOLERANCE');
+        require(block.timestamp <= deadline, 'DXswapRelayer: DEADLINE_REACHED');
         
-        orders[orderId] = Order(
+        orderIndex = _getOrderIndex();
+        orders[orderIndex] = Order(
             REMOVAL,
             tokenA,
             tokenB,
             amountA,
             amountB,
+            liquidity,
             priceTolerance,
-            minReserveA,
-            minReserveB,
+            minReserve,
+            address(0),
             deadline,
             maxWindows,
-            executionBounty,
             0,
-            address(0),
+            0,
+            factory,
             false
         );
 
+        address pair = DXswapLibrary.pairFor(address(factory), tokenA, tokenB);
+        (uint reserveA, uint reserveB,) = IDXswapPair(pair).getReserves();
+        uint256 windowTime = consultOracleParameters(amountA, amountB, reserveA, reserveB, maxWindows);
+        uint256 oracleId = oracleCreator.createOracle(windowTime, pair, uint8(windowTime/basewindowTime), 0);
+        orders[orderIndex].oracleId = oracleId;
+        oracleCreator.update(oracleId);
+
+        emit NewOrder(orderIndex, REMOVAL);
         return _getOrderIndex();
-    }
-
-    function initializeOrder (uint256 orderId) internal{
-        uint8 action = orders[orderId].action;
-        address tokenA = orders[orderId].tokenA;
-        address tokenB = orders[orderId].tokenB;
-        uint256 amountA = orders[orderId].amountA;
-        uint256 amountB = orders[orderId].amountB;
-        uint256 priceTolerance = orders[orderId].priceTolerance;
-        uint256 minReserveA = orders[orderId].minReserveA;
-        uint256 minReserveB = orders[orderId].minReserveB;
-        uint256 deadline = orders[orderId].deadline;
-        uint8 maxWindows = orders[orderId].maxWindows;
-        uint256 executionBounty = orders[orderId].executionBounty;
-
-        IDXswapFactory factory = IDXswapFactory(getPriceOracleFactory(tokenA, tokenB, minReserveA, minReserveB));
-        address pair;
-        if (factory.getPair(tokenA, tokenB) == address(0)) {
-            factory.createPair(tokenA, tokenB);
-            pair = factory.getPair(tokenA, tokenB);
-        } else{
-          pair = factory.getPair(tokenA, tokenB);
-        }
-        (uint256 dxReserveA, uint256 dxReserveB) = DXswapLibrary.getReserves(address(factory), tokenA, tokenB);
-        
-        if (action == PROVISION && minReserveA == 0 && minReserveB == 0 && dxReserveA == 0 && dxReserveB == 0) {
-            /* For initial liquidity provision can be deployed immediatly */
-            _pool(tokenA, tokenB, amountA, amountB, priceTolerance);
-        } else {
-            /* create oracle to calculate average price over time before providing liquidity*/
-            (uint256 windowTime, uint8 granularity) = consultOracleParameters(
-                factory,
-                tokenA,
-                tokenB,
-                amountA,
-                amountB,
-                maxWindows
-            );
-            uint256 oracleId = oracleCreator.createOracle(windowTime, pair, granularity, executionBounty);
-            orders[orderId].oracleId = oracleId;
-            emit NewOrder(orderId, action, tokenA, tokenB, amountA, amountB, priceTolerance, minReserveA, minReserveB, deadline, maxWindows, executionBounty, oracleId, address(factory));
-        }
     }
     
     /**
      * @dev Execute liquidity provision after price observation.
      * @param orderId to reference the commitment.
      */
-    function executeLiquidityProvision(uint256 orderId) external {
-        require(orderId <= orderCount && orderId != 0, 'DXliquidityRelay: INVALID_COMMITMENT');
-        require(orders[orderId].executed == false, 'DXliquidityRelay: COMMITMENT_EXECUTED');
-        require(oracleCreator.getOracleStatus(orders[orderId].oracleId) == true, 'DXliquidityRelay: OBSERVATION_RUNNING');
-        require(block.timestamp <= orders[orderId].deadline, 'DXliquidityRelay: DEADLINE_REACHED');
+    function executeOrder(uint256 orderId) external {
+        require(orderId <= orderCount && orderId != 0, 'DXswapRelayer: INVALID_COMMITMENT');
+        require(orders[orderId].executed == false, 'DXswapRelayer: COMMITMENT_EXECUTED');
+        require(oracleCreator.getOracleStatus(orders[orderId].oracleId) == true, 'DXswapRelayer: OBSERVATION_RUNNING');
+        require(block.timestamp <= orders[orderId].deadline, 'DXswapRelayer: DEADLINE_REACHED');
 
         address tokenA = orders[orderId].tokenA;
         address tokenB = orders[orderId].tokenB;
-        uint256 desiredAmountA = orders[orderId].amountA;
-        uint256 desiredAmountB = orders[orderId].amountB;
-        uint256 amountA = oracleCreator.consult(orders[orderId].oracleId, tokenA, desiredAmountA, tokenB);
-        uint256 amountB = oracleCreator.consult(orders[orderId].oracleId, tokenB, desiredAmountB, tokenA);
-        orders[orderId].executed = true;
+        uint256 amountA = oracleCreator.consult(orders[orderId].oracleId, tokenA, orders[orderId].amountA, tokenB);
+        uint256 amountB = oracleCreator.consult(orders[orderId].oracleId, tokenB, orders[orderId].amountB, tokenA);
 
-        _pool(tokenA, tokenB, amountA, amountB, orders[orderId].priceTolerance);
+        if(orders[orderId].action == PROVISION){
+          _pool(orderId, tokenA, tokenB, amountA, amountB, orders[orderId].priceTolerance);
+        } else if (orders[orderId].action == REMOVAL){
+          address pair = DXswapLibrary.pairFor(address(dxSwapFactory), tokenA, tokenB);
+          _unpool(orderId, tokenA, tokenB, pair, orders[orderId].liquidity, amountA, amountB, orders[orderId].priceTolerance);
+        }
+        orders[orderId].executed = true;
+        
     }
     
     function _pool(
+        uint256 _orderId,
         address _tokenA,
         address _tokenB,
         uint256 _amountA,
         uint256 _amountB,
         uint256 _priceTolerance
     ) internal {
-        uint256 minA = _amountA.sub(_amountA.mul(_priceTolerance) / PartsPerMillion);
-        uint256 minB = _amountB.sub(_amountB.mul(_priceTolerance) / PartsPerMillion);
+        uint256 minA = _amountA.sub(_amountA.mul(_priceTolerance) / PARTSPERMILLION);
+        uint256 minB = _amountB.sub(_amountB.mul(_priceTolerance) / PARTSPERMILLION);
+        uint256 amountA;
+        uint256 amountB;
+        uint256 liquidity;
 
         if (_tokenA != address(0) && _tokenB != address(0)) {
             TransferHelper.safeApprove(_tokenA, dxSwapRouter, _amountA);
             TransferHelper.safeApprove(_tokenB, dxSwapRouter, _amountB);
-            (uint256 amountA, uint256 amountB, uint256 liquidity) = IDXswapRouter(dxSwapRouter).addLiquidity(
+            (amountA, amountB, liquidity) = IDXswapRouter(dxSwapRouter).addLiquidity(
                 _tokenA,
                 _tokenB,
                 _amountA,
@@ -272,23 +253,17 @@ contract DXswapRelayer {
                 owner,
                 block.timestamp
             );
-            emit ExecutedPool(_tokenA, _tokenB, amountA, amountB, liquidity);
         } else {
-            address token = _tokenA == address(0) ? _tokenB : _tokenA;
-            uint256 amount = _tokenA == address(0) ? _amountB : _amountA;
-            uint256 value = _tokenA == address(0) ? _amountA : _amountB;
-            uint256 minToken = _tokenA == address(0) ? minB : minA;
-            uint256 minETH = _tokenA == address(0) ? minA : minB;
-
-            TransferHelper.safeApprove(token, dxSwapRouter, amount);
-            (uint256 amountToken, uint256 amountETH, uint256 liquidity) = IDXswapRouter(dxSwapRouter).addLiquidityETH{
-                value: value
-            }(token, amount, minToken, minETH, owner, block.timestamp);
-            emit ExecutedPool(address(0), token, amountETH, amountToken, liquidity);
+            TransferHelper.safeApprove(_tokenB, dxSwapRouter, _amountB);
+            (amountB, amountA, liquidity) = IDXswapRouter(dxSwapRouter).addLiquidityETH{
+                value: _amountA
+            }(_tokenB, _amountB, minB, minA, owner, block.timestamp);
         }
+        emit ExecutedPool(_orderId, _tokenA, _tokenB, amountA, amountB, liquidity);
     }
 
     function _unpool(
+        uint256 _orderId,
         address _tokenA,
         address _tokenB,
         address _pair,
@@ -297,12 +272,14 @@ contract DXswapRelayer {
         uint256 _amountB,
         uint256 _priceTolerance
     ) internal {
-        uint256 minA = _amountA.sub(_amountA.mul(_priceTolerance) / PartsPerMillion);
-        uint256 minB = _amountB.sub(_amountB.mul(_priceTolerance) / PartsPerMillion);
+        uint256 minA = _amountA.sub(_amountA.mul(_priceTolerance) / PARTSPERMILLION);
+        uint256 minB = _amountB.sub(_amountB.mul(_priceTolerance) / PARTSPERMILLION);
+        uint amountA;
+        uint amountB;
 
         if (_tokenA != address(0) && _tokenB != address(0)) {
             TransferHelper.safeApprove(_pair, dxSwapRouter, _liquidity);
-            (uint amountA, uint amountB) = IDXswapRouter(dxSwapRouter).removeLiquidity(
+            (amountA, amountB) = IDXswapRouter(dxSwapRouter).removeLiquidity(
                 _tokenA,
                 _tokenB,
                 _liquidity,
@@ -311,50 +288,42 @@ contract DXswapRelayer {
                 owner,
                 block.timestamp
             );
-            emit ExecutedUnpool(_tokenA, _tokenB, amountA, amountB, _liquidity);
+            emit ExecutedUnpool(_orderId, _tokenA, _tokenB, amountA, amountB, _liquidity);
         } else {
-            address token = _tokenA == address(0) ? _tokenB : _tokenA;
-            uint256 amount = _tokenA == address(0) ? _amountB : _amountA;
-            uint256 minToken = _tokenA == address(0) ? minB : minA;
-            uint256 minETH = _tokenA == address(0) ? minA : minB;
-
-            TransferHelper.safeApprove(token, dxSwapRouter, amount);
-            (uint amountToken, uint amountETH) = IDXswapRouter(dxSwapRouter).removeLiquidityETH(
-              token,
+            TransferHelper.safeApprove(_tokenB, dxSwapRouter, _amountB);
+            (amountB, amountA) = IDXswapRouter(dxSwapRouter).removeLiquidityETH(
+              _tokenB,
               _liquidity,
-              minToken,
-              minETH,
+              minB,
+              minA,
               owner,
               block.timestamp
             );
-            emit ExecutedUnpool(address(0), token, amountETH, amountToken, _liquidity);
         }
+        emit ExecutedUnpool(_orderId, _tokenA, _tokenB, amountA, amountB, _liquidity);
     }
 
     /**
      * @dev Withdraw an timed out order.
      * @param orderId to reference the commitment.
      */
-    function withdrawTerminatedCommitment(uint256 orderId) external {
-        require(block.timestamp > orders[orderId].deadline, 'DXliquidityRelay: DEADLINE_NOT_REACHED');
-        require(orders[orderId].executed == false, 'DXliquidityRelay: COMMITMENT_EXECUTED');
+    function withdrawExpiredCommitment(uint256 orderId) external {
+        require(block.timestamp > orders[orderId].deadline, 'DXswapRelayer: DEADLINE_NOT_REACHED');
+        require(orders[orderId].executed == false, 'DXswapRelayer: COMMITMENT_EXECUTED');
         address tokenA = orders[orderId].tokenA;
         address tokenB = orders[orderId].tokenB;
         uint256 amountA = orders[orderId].amountA;
         uint256 amountB = orders[orderId].amountB;
         orders[orderId].executed = true;
 
-        if (tokenA == address(0) || tokenB == address(0)) {
-            address token = tokenA== address(0) ? tokenB : tokenA;
-            uint256 valueETH = tokenA == address(0) ? amountA : amountB;
-            uint256 amountToken = tokenA == address(0) ? amountB : amountA;
-            TransferHelper.safeTransferETH(owner, valueETH);
-            TransferHelper.safeTransfer(token, owner, amountToken);
+        if (tokenA == address(0)) {
+            ETHWithdraw(amountA);
+            ERC20Withdraw(tokenB,amountB);
         } else {
-            TransferHelper.safeTransfer(tokenA, owner, amountA);
-            TransferHelper.safeTransfer(tokenB, owner, amountB);
+            ERC20Withdraw(tokenA,amountA);
+            ERC20Withdraw(tokenB,amountB);
         }
-        emit OrderTerminated(orderId);
+        emit ExpiredOrderWithdrawn(orderId);
     }
 
     function _getOrderIndex() internal returns(uint256 orderId){
@@ -362,46 +331,14 @@ contract DXswapRelayer {
         orderId = orderCount;
     }
 
-    function getPriceOracleFactory(
-        address tokenA,
-        address tokenB,
-        uint256 minReserveA,
-        uint256 minReserveB
-    ) internal view returns (address factory) {
-        (uint256 dxSwapReserveA, uint256 dxSwapReserveB) = DXswapLibrary.getReserves(dxSwapFactory, tokenA, tokenB);
-        (uint256 uniswapReserveA, uint256 uniswapReserveB) = DXswapLibrary.getReserves(uniswapFactory, tokenA, tokenB);
-        require(
-            (dxSwapReserveA >= minReserveA && dxSwapReserveB >= minReserveB) ||
-                (uniswapReserveA >= minReserveA && uniswapReserveB >= minReserveB),
-            'DXliquidityRelay: INSUFFICIENT_RESERVE'
-        );
-        if (dxSwapReserveA >= minReserveA && dxSwapReserveB >= minReserveB) {
-            factory = dxSwapFactory;
-        } else {
-            factory = uniswapFactory;
-        }
-    }
-
-    function getPoolStake(
-        address factory,
-        address tokenA,
-        address tokenB,
-        uint256 amountA,
-        uint256 amountB
-    ) internal view returns (uint256 poolStake) {
-        (uint256 reserveA, uint256 reserveB) = DXswapLibrary.getReserves(factory, tokenA, tokenB);
-        poolStake = (amountA.add(amountB)) / ((reserveA.add(reserveB))).mul(PartsPerMillion);
-    }
-
     function consultOracleParameters(
-        IDXswapFactory factory,
-        address tokenA,
-        address tokenB,
         uint256 amountA,
         uint256 amountB,
+        uint256 reserveA,
+        uint256 reserveB,
         uint256 maxWindows
-    ) internal view returns (uint256 windowTime, uint8 granularity) {
-        uint256 poolStake = getPoolStake(address(factory), tokenA, tokenB, amountA, amountB);
+    ) internal view returns (uint256 windowTime) {
+        uint256 poolStake = (amountA.add(amountB)) / ((reserveA.add(reserveB))).mul(PARTSPERMILLION);
         // poolStake: 0.1% = 100; 1=1000; 10% = 10000;
         uint256 windows;
         if(poolStake < 100) {
@@ -417,19 +354,17 @@ contract DXswapRelayer {
         } else {
           windows = 10;
         }
-        
         windows = windows <= maxWindows ? windows : maxWindows;
         windowTime = windows.mul(basewindowTime);
-        granularity = uint8(windowTime / basewindowTime);
     }
 
     function ERC20Withdraw(address token, uint256 amount) public {
-        require(msg.sender == owner, 'DXliquidityRelay: CALLER_NOT_OWNER');
+        require(msg.sender == owner, 'DXswapRelayer: CALLER_NOT_OWNER');
         TransferHelper.safeTransfer(token, owner, amount);
     }
 
     function ETHWithdraw(uint256 amount) public {
-        require(msg.sender == owner, 'DXliquidityRelay: CALLER_NOT_OWNER');
+        require(msg.sender == owner, 'DXswapRelayer: CALLER_NOT_OWNER');
         TransferHelper.safeTransferETH(owner, amount);
     }
 }
