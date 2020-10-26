@@ -104,23 +104,23 @@ contract DXswapRelayer {
 
         address pair = _pair(tokenA, tokenB, factory);
         orderIndex = _getOrderIndex();
-        orders[orderIndex] = Order(
-            PROVISION,
-            tokenA,
-            tokenB,
-            amountA,
-            amountB,
-            0,
-            priceTolerance,
-            minReserveA,
-            minReserveB,
-            pair,
-            deadline,
-            maxWindowTime,
-            0,
-            factory,
-            false
-        );
+        orders[orderIndex] = Order({
+            action: PROVISION,
+            tokenA: tokenA,
+            tokenB: tokenB,
+            amountA: amountA,
+            amountB: amountB,
+            liquidity: 0,
+            priceTolerance: priceTolerance,
+            minReserveA: minReserveA,
+            minReserveB: minReserveB,
+            oraclePair: pair,
+            deadline: deadline,
+            maxWindowTime: maxWindowTime,
+            oracleId: 0,
+            factory: factory,
+            executed: false
+        });
         emit NewOrder(orderIndex, PROVISION);
 
         (uint reserveA, uint reserveB,) = IDXswapPair(pair).getReserves();
@@ -132,7 +132,7 @@ contract DXswapRelayer {
         } else {
             /* create oracle to calculate average price over time before providing liquidity*/
             uint256 windowTime = consultOracleParameters(amountA, amountB, reserveA, reserveB, maxWindowTime);
-            orders[orderIndex].oracleId = oracleCreator.createOracle(windowTime, factory, pair);
+            orders[orderIndex].oracleId = oracleCreator.createOracle(windowTime, pair);
         }
     }
 
@@ -159,68 +159,69 @@ contract DXswapRelayer {
 
         address pair = _pair(factory, tokenA, tokenB);
         orderIndex = _getOrderIndex();
-        orders[orderIndex] = Order(
-            REMOVAL,
-            tokenA,
-            tokenB,
-            amountA,
-            amountB,
-            liquidity,
-            priceTolerance,
-            minReserveA,
-            minReserveB,
-            pair,
-            deadline,
-            maxWindowTime,
-            0,
-            factory,
-            false
-        );
+        orders[orderIndex] = Order({
+            action: REMOVAL,
+            tokenA: tokenA,
+            tokenB: tokenB,
+            amountA: amountA,
+            amountB: amountB,
+            liquidity: liquidity,
+            priceTolerance: priceTolerance,
+            minReserveA: minReserveA,
+            minReserveB: minReserveB,
+            oraclePair: pair,
+            deadline: deadline,
+            maxWindowTime: maxWindowTime,
+            oracleId: 0,
+            factory: factory,
+            executed: false
+        });
 
         address dxSwapPair = DXswapLibrary.pairFor(address(dxSwapFactory), tokenA, tokenB);
         (uint reserveA, uint reserveB,) = IDXswapPair(dxSwapPair).getReserves();
         uint256 windowTime = consultOracleParameters(amountA, amountB, reserveA, reserveB, maxWindowTime);
-        orders[orderIndex].oracleId = oracleCreator.createOracle(windowTime, factory, pair);
+        orders[orderIndex].oracleId = oracleCreator.createOracle(windowTime, pair);
         emit NewOrder(orderIndex, REMOVAL);
     }
     
     function executeOrder(uint256 orderIndex) external {
+        Order storage order = orders[orderIndex];
         require(orderIndex <= orderCount && orderIndex != 0, 'DXswapRelayer: INVALID_ORDER');
-        require(orders[orderIndex].executed == false, 'DXswapRelayer: ORDER_EXECUTED');
-        require(oracleCreator.isOracleFinalized(orders[orderIndex].oracleId) , 'DXswapRelayer: OBSERVATION_RUNNING');
-        require(block.timestamp <= orders[orderIndex].deadline, 'DXswapRelayer: DEADLINE_REACHED');
+        require(order.executed == false, 'DXswapRelayer: ORDER_EXECUTED');
+        require(oracleCreator.isOracleFinalized(order.oracleId) , 'DXswapRelayer: OBSERVATION_RUNNING');
+        require(block.timestamp <= order.deadline, 'DXswapRelayer: DEADLINE_REACHED');
 
-        address tokenA = orders[orderIndex].tokenA;
-        address tokenB = orders[orderIndex].tokenB;
+        address tokenA = order.tokenA;
+        address tokenB = order.tokenB;
         uint256 amountA;
         if(tokenA == address(0)){
           amountA = oracleCreator.consult(
-            orders[orderIndex].oracleId,
+            order.oracleId,
             IDXswapRouter(dxSwapRouter).WETH(),
-            orders[orderIndex].amountA
+            order.amountA
           );
         } else {
           amountA = oracleCreator.consult(
-            orders[orderIndex].oracleId,
+            order.oracleId,
             tokenA,
-            orders[orderIndex].amountA
+            order.amountA
           );
         }
-        uint256 amountB = oracleCreator.consult(orders[orderIndex].oracleId, tokenB, orders[orderIndex].amountB);
+        uint256 amountB = oracleCreator.consult(order.oracleId, tokenB, order.amountB);
 
-        orders[orderIndex].executed = true;
-        if(orders[orderIndex].action == PROVISION){
-          _pool(tokenA, tokenB, amountA, amountB, orders[orderIndex].priceTolerance);
-        } else if (orders[orderIndex].action == REMOVAL){
+        order.executed = true;
+        if(order.action == PROVISION){
+          _pool(tokenA, tokenB, amountA, amountB, order.priceTolerance);
+        } else if (order.action == REMOVAL){
           address pair = _pair(tokenA, tokenB, dxSwapFactory);
           _unpool(
             tokenA, 
             tokenB, 
             pair, 
-            orders[orderIndex].liquidity,
+            order.liquidity,
             amountA, 
             amountB,
-            orders[orderIndex].priceTolerance
+            order.priceTolerance
           );
         }
         emit ExecutedOrder(orderIndex);
@@ -299,13 +300,14 @@ contract DXswapRelayer {
     }
 
     function withdrawExpiredOrder(uint256 orderIndex) external {
-        require(block.timestamp > orders[orderIndex].deadline, 'DXswapRelayer: DEADLINE_NOT_REACHED');
-        require(orders[orderIndex].executed == false, 'DXswapRelayer: ORDER_EXECUTED');
-        address tokenA = orders[orderIndex].tokenA;
-        address tokenB = orders[orderIndex].tokenB;
-        uint256 amountA = orders[orderIndex].amountA;
-        uint256 amountB = orders[orderIndex].amountB;
-        orders[orderIndex].executed = true;
+        Order storage order = orders[orderIndex];
+        require(block.timestamp > order.deadline, 'DXswapRelayer: DEADLINE_NOT_REACHED');
+        require(order.executed == false, 'DXswapRelayer: ORDER_EXECUTED');
+        address tokenA = order.tokenA;
+        address tokenB = order.tokenB;
+        uint256 amountA = order.amountA;
+        uint256 amountB = order.amountB;
+        order.executed = true;
 
         if (tokenA == address(0)) {
             TransferHelper.safeTransferETH(owner, amountA);
@@ -317,16 +319,18 @@ contract DXswapRelayer {
         emit WithdrawnExpiredOrder(orderIndex);
     }
     
-    function updateOracle(uint256 _orderIndex) external {
-      require(block.timestamp < orders[_orderIndex].deadline, 'DXswapRelayer: DEADLINE_REACHED');
-      require(address(this).balance >= GAS_ORACLE_UPDATE.mul(tx.gasprice).add(BOUNTY), 'DXswapRelayer: INSUFFICIENT_BALANCE');
-      (uint reserveA, uint reserveB,) = IDXswapPair(orders[_orderIndex].oraclePair).getReserves();
+    function updateOracle(uint256 orderIndex) external {
+      Order storage order = orders[orderIndex];
+      require(block.timestamp < order.deadline, 'DXswapRelayer: DEADLINE_REACHED');
+      uint256 amountBounty = GAS_ORACLE_UPDATE.mul(tx.gasprice).add(BOUNTY);
+      require(address(this).balance >= amountBounty, 'DXswapRelayer: INSUFFICIENT_BALANCE');
+      (uint reserveA, uint reserveB,) = IDXswapPair(order.oraclePair).getReserves();
       require(
-        reserveA >= orders[_orderIndex].minReserveA && reserveB >= orders[_orderIndex].minReserveB,
+        reserveA >= order.minReserveA && reserveB >= order.minReserveB,
         'DXswapRelayer: RESERVE_TO_LOW'
       );
-      oracleCreator.update(orders[_orderIndex].oracleId);
-      TransferHelper.safeTransferETH(msg.sender, GAS_ORACLE_UPDATE.mul(tx.gasprice).add(BOUNTY));
+      oracleCreator.update(order.oracleId);
+      TransferHelper.safeTransferETH(msg.sender, amountBounty);
     }
 
     function consultOracleParameters(

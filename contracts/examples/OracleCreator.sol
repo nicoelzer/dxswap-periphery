@@ -12,14 +12,12 @@ contract OracleCreator {
 
     event OracleCreated(
         uint256 indexed _oracleIndex,
-        address indexed _factory,
         address indexed _pair,
         uint256 windowTime
     );
 
     struct Oracle{
       uint256 windowTime;
-      address factory;
       address token0;
       address token1;
       IDXswapPair pair;
@@ -37,65 +35,65 @@ contract OracleCreator {
 
     function createOracle(
         uint256 windowTime,
-        address factory,
         address pair
     ) public returns (uint256 oracleId) {
       address token0 = IDXswapPair(pair).token0();
       address token1 = IDXswapPair(pair).token1();
-      oracles[oraclesIndex] = Oracle(
-        windowTime,
-        factory,
-        token0,
-        token1,
-        IDXswapPair(pair),
-        0,
-        0,
-        0,
-        FixedPoint.uq112x112(0),
-        FixedPoint.uq112x112(0),
-        0,
-        msg.sender
-      );
+      oracles[oraclesIndex] = Oracle({
+          windowTime: windowTime,
+          token0: token0,
+          token1: token1,
+          pair: IDXswapPair(pair),
+          blockTimestampLast: 0,
+          price0CumulativeLast: 0,
+          price1CumulativeLast: 0,
+          price0Average: FixedPoint.uq112x112(0),
+          price1Average: FixedPoint.uq112x112(0),
+          observationsCount: 0,
+          owner: msg.sender
+      });
       oracleId = oraclesIndex;
       oraclesIndex++;
-      emit OracleCreated(oracleId, factory, pair, windowTime);
+      emit OracleCreated(oracleId, pair, windowTime);
     }
 
     function update(uint256 oracleIndex) public {
-        require(msg.sender == oracles[oracleIndex].owner, 'OracleCreator: CALLER_NOT_OWNER');
-        require(oracles[oracleIndex].observationsCount < 2, 'OracleCreator: FINISHED_OBERSERVATION');
+        Oracle storage oracle = oracles[oracleIndex];
+        require(msg.sender == oracle.owner, 'OracleCreator: CALLER_NOT_OWNER');
+        require(oracle.observationsCount < 2, 'OracleCreator: FINISHED_OBERSERVATION');
         (uint price0Cumulative, uint price1Cumulative, uint32 blockTimestamp) =
-            DXswapOracleLibrary.currentCumulativePrices(address(oracles[oracleIndex].pair));
-        uint32 timeElapsed = blockTimestamp - oracles[oracleIndex].blockTimestampLast; // overflow is desired
+            DXswapOracleLibrary.currentCumulativePrices(address(oracle.pair));
+        uint32 timeElapsed = blockTimestamp - oracle.blockTimestampLast; // overflow is desired
 
-        // ensure that at least one full period has passed since the last update, first update can be executed immediately
+        // first update can be executed immediately. Ensure that at least one full period has passed since the last update 
         require(
-          oracles[oracleIndex].observationsCount == 0 || timeElapsed >= oracles[oracleIndex].windowTime, 
+          oracle.observationsCount == 0 || timeElapsed >= oracle.windowTime, 
           'OracleCreator: PERIOD_NOT_ELAPSED'
         );
 
         // overflow is desired, casting never truncates
         // cumulative price is in (uq112x112 price * seconds) units so we simply wrap it after division by time elapsed
-        oracles[oracleIndex].price0Average = FixedPoint.uq112x112(
-          uint224((price0Cumulative - oracles[oracleIndex].price0CumulativeLast) / timeElapsed)
+        oracle.price0Average = FixedPoint.uq112x112(
+          uint224((price0Cumulative - oracle.price0CumulativeLast) / timeElapsed)
         );
-        oracles[oracleIndex].price1Average = FixedPoint.uq112x112(
-          uint224((price1Cumulative - oracles[oracleIndex].price1CumulativeLast) / timeElapsed)
+        oracle.price1Average = FixedPoint.uq112x112(
+          uint224((price1Cumulative - oracle.price1CumulativeLast) / timeElapsed)
         );
 
-        oracles[oracleIndex].price0CumulativeLast = price0Cumulative;
-        oracles[oracleIndex].price1CumulativeLast = price1Cumulative;
-        oracles[oracleIndex].blockTimestampLast = blockTimestamp;
-        oracles[oracleIndex].observationsCount++;
+        oracle.price0CumulativeLast = price0Cumulative;
+        oracle.price1CumulativeLast = price1Cumulative;
+        oracle.blockTimestampLast = blockTimestamp;
+        oracle.observationsCount++;
     }
 
     // note this will always return 0 before update has been called successfully for the first time.
     function consult(uint256 oracleIndex, address token, uint amountIn) external view returns (uint amountOut) {
-        if (token == oracles[oracleIndex].token0) {
-            amountOut = oracles[oracleIndex].price0Average.mul(amountIn).decode144();
+        Oracle storage oracle = oracles[oracleIndex];
+        if (token == oracle.token0) {
+            amountOut = oracle.price0Average.mul(amountIn).decode144();
         } else {
-            require(token == oracles[oracleIndex].token1, 'OracleCreator: INVALID_TOKEN');
-            amountOut = oracles[oracleIndex].price1Average.mul(amountIn).decode144();
+            require(token == oracle.token1, 'OracleCreator: INVALID_TOKEN');
+            amountOut = oracle.price1Average.mul(amountIn).decode144();
         }
     }
 
