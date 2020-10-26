@@ -125,12 +125,12 @@ contract DXswapRelayer {
 
         (uint reserveA, uint reserveB,) = IDXswapPair(pair).getReserves();
         if (minReserveA == 0 && minReserveB == 0 && reserveA == 0 && reserveB == 0) {
-            /* For initial liquidity provision can be transfered immediatly */
+            /* Non-circulating tokens can be provisioned immediately if reserve thresholds are zero */
             orders[orderIndex].executed = true;
             _pool(tokenA, tokenB, amountA, amountB, priceTolerance);
             emit ExecutedOrder(orderIndex);
         } else {
-            /* create oracle to calculate average price over time before providing liquidity*/
+            /* Create oracle to calculate average price before providing liquidity */
             uint256 windowTime = consultOracleParameters(amountA, amountB, reserveA, reserveB, maxWindowTime);
             orders[orderIndex].oracleId = oracleCreator.createOracle(windowTime, pair);
         }
@@ -195,34 +195,34 @@ contract DXswapRelayer {
         address tokenB = order.tokenB;
         uint256 amountA;
         if(tokenA == address(0)){
-          amountA = oracleCreator.consult(
-            order.oracleId,
-            IDXswapRouter(dxSwapRouter).WETH(),
-            order.amountA
-          );
+            amountA = oracleCreator.consult(
+              order.oracleId,
+              IDXswapRouter(dxSwapRouter).WETH(),
+              order.amountA
+            );
         } else {
-          amountA = oracleCreator.consult(
-            order.oracleId,
-            tokenA,
-            order.amountA
-          );
+            amountA = oracleCreator.consult(
+              order.oracleId,
+              tokenA,
+              order.amountA
+            );
         }
         uint256 amountB = oracleCreator.consult(order.oracleId, tokenB, order.amountB);
 
         order.executed = true;
         if(order.action == PROVISION){
-          _pool(tokenA, tokenB, amountA, amountB, order.priceTolerance);
+            _pool(tokenA, tokenB, amountA, amountB, order.priceTolerance);
         } else if (order.action == REMOVAL){
-          address pair = _pair(tokenA, tokenB, dxSwapFactory);
-          _unpool(
-            tokenA, 
-            tokenB, 
-            pair, 
-            order.liquidity,
-            amountA, 
-            amountB,
-            order.priceTolerance
-          );
+            address pair = _pair(tokenA, tokenB, dxSwapFactory);
+            _unpool(
+              tokenA, 
+              tokenB, 
+              pair, 
+              order.liquidity,
+              amountA, 
+              amountB,
+              order.priceTolerance
+            );
         }
         emit ExecutedOrder(orderIndex);
     }
@@ -289,19 +289,19 @@ contract DXswapRelayer {
         } else {
             TransferHelper.safeApprove(_tokenB, dxSwapRouter, _amountB);
             (amountB, amountA) = IDXswapRouter(dxSwapRouter).removeLiquidityETH(
-              _tokenB,
-              _liquidity,
-              minB,
-              minA,
-              owner,
-              block.timestamp
+                _tokenB,
+                _liquidity,
+                minB,
+                minA,
+                owner,
+                block.timestamp
             );
         }
     }
 
     function withdrawExpiredOrder(uint256 orderIndex) external {
         Order storage order = orders[orderIndex];
-        require(block.timestamp > order.deadline, 'DXswapRelayer: DEADLINE_NOT_REACHED');
+        require(block.timestamp < order.deadline, 'DXswapRelayer: DEADLINE_NOT_REACHED');
         require(order.executed == false, 'DXswapRelayer: ORDER_EXECUTED');
         address tokenA = order.tokenA;
         address tokenB = order.tokenB;
@@ -320,17 +320,17 @@ contract DXswapRelayer {
     }
     
     function updateOracle(uint256 orderIndex) external {
-      Order storage order = orders[orderIndex];
-      require(block.timestamp < order.deadline, 'DXswapRelayer: DEADLINE_REACHED');
-      uint256 amountBounty = GAS_ORACLE_UPDATE.mul(tx.gasprice).add(BOUNTY);
-      require(address(this).balance >= amountBounty, 'DXswapRelayer: INSUFFICIENT_BALANCE');
-      (uint reserveA, uint reserveB,) = IDXswapPair(order.oraclePair).getReserves();
-      require(
-        reserveA >= order.minReserveA && reserveB >= order.minReserveB,
-        'DXswapRelayer: RESERVE_TO_LOW'
-      );
-      oracleCreator.update(order.oracleId);
-      TransferHelper.safeTransferETH(msg.sender, amountBounty);
+        Order storage order = orders[orderIndex];
+        require(block.timestamp < order.deadline, 'DXswapRelayer: DEADLINE_REACHED');
+        uint256 amountBounty = GAS_ORACLE_UPDATE.mul(tx.gasprice).add(BOUNTY);
+        require(address(this).balance >= amountBounty, 'DXswapRelayer: INSUFFICIENT_BALANCE');
+        (uint reserveA, uint reserveB,) = IDXswapPair(order.oraclePair).getReserves();
+        require(
+            reserveA >= order.minReserveA && reserveB >= order.minReserveB,
+            'DXswapRelayer: RESERVE_TO_LOW'
+        );
+        oracleCreator.update(order.oracleId);
+        TransferHelper.safeTransferETH(msg.sender, amountBounty);
     }
 
     function consultOracleParameters(
@@ -356,7 +356,7 @@ contract DXswapRelayer {
             }
             windowTime = windowTime <= maxWindowTime ? windowTime : maxWindowTime;
         } else {
-          windowTime = maxWindowTime;
+            windowTime = maxWindowTime;
         }
     }
 
@@ -364,11 +364,11 @@ contract DXswapRelayer {
         address token1;
         address token2;
         if(_factory == dxSwapFactory){
-          token1 = _token1 == address(0) ? IDXswapRouter(dxSwapRouter).WETH() : _token1;
-          token2 = _token2 == address(0) ? IDXswapRouter(dxSwapRouter).WETH() : _token2;
+            token1 = _token1 == address(0) ? IDXswapRouter(dxSwapRouter).WETH() : _token1;
+            token2 = _token2 == address(0) ? IDXswapRouter(dxSwapRouter).WETH() : _token2;
         } else if(_factory == uniswapFactory) {
-          token1 = _token1 == address(0) ? IDXswapRouter(uniswapRouter).WETH() : _token1;
-          token2 = _token2 == address(0) ? IDXswapRouter(uniswapRouter).WETH() : _token2;
+            token1 = _token1 == address(0) ? IDXswapRouter(uniswapRouter).WETH() : _token1;
+            token2 = _token2 == address(0) ? IDXswapRouter(uniswapRouter).WETH() : _token2;
         }
         pair = IDXswapFactory(_factory).getPair(token1, token2);
     }

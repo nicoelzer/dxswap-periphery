@@ -1,10 +1,10 @@
 import chai, { expect } from 'chai'
 import { Contract, utils } from 'ethers'
 import { AddressZero, MaxUint256 } from 'ethers/constants'
-import { BigNumber, bigNumberify } from 'ethers/utils'
-import { solidity, MockProvider, createFixtureLoader, deployContract } from 'ethereum-waffle'
+import { BigNumber } from 'ethers/utils'
+import { solidity, MockProvider, createFixtureLoader } from 'ethereum-waffle'
 
-import { expandTo18Decimals, mineBlock, encodePrice, MINIMUM_LIQUIDITY } from './shared/utilities'
+import { expandTo18Decimals, mineBlock, MINIMUM_LIQUIDITY } from './shared/utilities'
 import { dxswapFixture } from './shared/fixtures'
 
 chai.use(solidity)
@@ -45,7 +45,7 @@ describe('DXswapRelayer', () => {
   const defaultAmountA = expandTo18Decimals(1)
   const defaultAmountB = expandTo18Decimals(4)
   const expectedLiquidity = expandTo18Decimals(2)
-  const defaultPriceTolerance = 990000 // 1%
+  const defaultPriceTolerance = 990000 // TODOOOOO: 99%
   const defaultMinReserve = expandTo18Decimals(1)
   const defaultDeadline = Date.now() + 1800 // 30 Minutes
   const defaultMaxWindowTime = 300 // 5 Minutes

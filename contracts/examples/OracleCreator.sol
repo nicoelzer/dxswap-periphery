@@ -17,17 +17,17 @@ contract OracleCreator {
     );
 
     struct Oracle{
-      uint256 windowTime;
-      address token0;
-      address token1;
-      IDXswapPair pair;
-      uint32 blockTimestampLast;
-      uint256 price0CumulativeLast;
-      uint256 price1CumulativeLast;
-      FixedPoint.uq112x112 price0Average;
-      FixedPoint.uq112x112 price1Average;
-      uint256 observationsCount;
-      address owner;
+        uint256 windowTime;
+        address token0;
+        address token1;
+        IDXswapPair pair;
+        uint32 blockTimestampLast;
+        uint256 price0CumulativeLast;
+        uint256 price1CumulativeLast;
+        FixedPoint.uq112x112 price0Average;
+        FixedPoint.uq112x112 price1Average;
+        uint256 observationsCount;
+        address owner;
     }
 
     mapping(uint256 => Oracle) public oracles;
@@ -37,24 +37,24 @@ contract OracleCreator {
         uint256 windowTime,
         address pair
     ) public returns (uint256 oracleId) {
-      address token0 = IDXswapPair(pair).token0();
-      address token1 = IDXswapPair(pair).token1();
-      oracles[oraclesIndex] = Oracle({
-          windowTime: windowTime,
-          token0: token0,
-          token1: token1,
-          pair: IDXswapPair(pair),
-          blockTimestampLast: 0,
-          price0CumulativeLast: 0,
-          price1CumulativeLast: 0,
-          price0Average: FixedPoint.uq112x112(0),
-          price1Average: FixedPoint.uq112x112(0),
-          observationsCount: 0,
-          owner: msg.sender
-      });
-      oracleId = oraclesIndex;
-      oraclesIndex++;
-      emit OracleCreated(oracleId, pair, windowTime);
+        address token0 = IDXswapPair(pair).token0();
+        address token1 = IDXswapPair(pair).token1();
+        oracles[oraclesIndex] = Oracle({
+            windowTime: windowTime,
+            token0: token0,
+            token1: token1,
+            pair: IDXswapPair(pair),
+            blockTimestampLast: 0,
+            price0CumulativeLast: 0,
+            price1CumulativeLast: 0,
+            price0Average: FixedPoint.uq112x112(0),
+            price1Average: FixedPoint.uq112x112(0),
+            observationsCount: 0,
+            owner: msg.sender
+        });
+        oracleId = oraclesIndex;
+        oraclesIndex++;
+        emit OracleCreated(oracleId, pair, windowTime);
     }
 
     function update(uint256 oracleIndex) public {
@@ -98,7 +98,7 @@ contract OracleCreator {
     }
 
     function isOracleFinalized(uint256 oracleIndex) external view returns (bool){
-      return oracles[oracleIndex].observationsCount == 2 ? true : false; 
+        return oracles[oracleIndex].observationsCount == 2 ? true : false; 
     }
 
 }
